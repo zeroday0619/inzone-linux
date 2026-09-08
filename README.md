@@ -1,6 +1,6 @@
-# Sony INZONE H9 II — Linux 완전 구현
+# Sony INZONE H9 II for Linux 
 
-Sony INZONE H9 II (MDR-G900N / 모델 코드 YY2987) 무선 게이밍 헤드셋을 위한 완전한 Linux 네이티브 드라이버 및 DSP 오디오 스택입니다.
+Sony INZONE H9 II (MDR-G900N / 모델 코드 YY2987) 무선 게이밍 헤드셋을 위한 Linux 네이티브 드라이버 및 DSP 오디오 스택입니다.
 
 Windows 전용 유틸리티인 **INZONE Hub 1.0.19.0**의 독점 기능(7.1ch 공간 음향 가상화, 소니 전용 10밴드 EQ 및 프리셋, 내부 공간 ALC, 동적 범위 제어(DRC), 마이크 AGC, 그리고 USB HID 하드웨어 제어)을 클린룸 역분석하여 **PipeWire**, **WirePlumber**, 그리고 **C LADSPA 네이티브 엔진**으로 재구현했습니다.
 
