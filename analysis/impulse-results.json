@@ -1,0 +1,16 @@
+{
+  "samples": 375808,
+  "channel_impulse_peaks": [
+    0.06927239149808884,
+    0.07606062293052673,
+    0.04746051877737045,
+    0.0007812408148311079,
+    0.08274883776903152,
+    0.05031752213835716,
+    0.16040080785751343,
+    0.13329526782035828
+  ],
+  "peak": 1.0,
+  "silence_tail_peak": 0.0,
+  "checks": "finite output, eight channel responses, ALC bound and silence recovery"
+}

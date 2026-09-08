@@ -1,0 +1,64 @@
+# Vendor downloads, extracted assets and local backups.
+/downloads/
+/assets/
+/backups/
+
+# Raw analysis stays local. Only reviewed summary reports are published.
+/analysis/*
+!/analysis/README.md
+!/analysis/impulse-results.json
+!/analysis/pipewire-sfx-results.json
+!/analysis/live-profile-results.json
+!/analysis/live-automation-results.json
+!/analysis/device-write-verification.json
+!/analysis/profile-switch-results.json
+!/analysis/install-results.json
+!/analysis/tui-results.json
+
+# Download provenance is public; raw device captures are local.
+/evidence/*
+!/evidence/installer.json
+
+# Downloaded decompiler and its package cache.
+/tools/ilspycmd
+/tools/.store/
+.dotnet/
+.nuget/
+
+# Binary/reversing artifacts, even if copied outside their usual directories.
+*.exe
+*.dll
+*.dll[0-9]*
+*.msi
+*.cab
+*.ole
+*.bin
+*.hki
+*.ba
+*.decoded
+*.asm
+*.decompiled.cs
+*.strings-*.txt
+*.pe.txt
+*.wav
+*.f32
+
+# Build, Python, editor and local configuration files.
+*.so
+*.so.*
+*.o
+*.a
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.coverage
+htmlcov/
+*.log
+*.tmp
+*.swp
+.DS_Store
+.env
+.env.*
+!.env.example

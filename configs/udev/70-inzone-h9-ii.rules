@@ -1,0 +1,2 @@
+# INZONE H9 II control interface, accessible only to the active local desktop user.
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="054c", ATTRS{idProduct}=="0fa8", TAG+="uaccess"

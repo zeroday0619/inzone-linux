@@ -1,0 +1,15 @@
+[Unit]
+Description=INZONE application-associated listening profiles
+After=wireplumber.service
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=simple
+ExecStart="%h/.local/bin/inzone-profile" --auto-watch
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=60
+
+[Install]
+WantedBy=default.target

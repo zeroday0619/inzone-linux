@@ -1,0 +1,16 @@
+{
+  "terminal": [
+    24,
+    80
+  ],
+  "screens": [
+    "profiles",
+    "Sony presets",
+    "EQ editor",
+    "automation",
+    "hardware",
+    "local HRTF import"
+  ],
+  "applied_changes": false,
+  "exit_code": 0
+}

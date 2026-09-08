@@ -1,0 +1,44 @@
+[
+  {
+    "profile": "music",
+    "returncode": 0,
+    "output": "적용: 음악 · 원음 / 안정성 우선",
+    "error": "",
+    "default": "alsa_output.usb-Sony_INZONE_H9_II-00.stereo-game"
+  },
+  {
+    "profile": "fps",
+    "returncode": 0,
+    "output": "적용: FPS · 저음 감소 / 발소리 대역 강조",
+    "error": "",
+    "default": "alsa_output.usb-Sony_INZONE_H9_II-00.stereo-game"
+  },
+  {
+    "profile": "voice",
+    "returncode": 0,
+    "output": "적용: 통화 · 말소리 강조 / 마이크 저역 정리",
+    "error": "",
+    "default": "alsa_output.usb-Sony_INZONE_H9_II-00.stereo-chat"
+  },
+  {
+    "profile": "balanced",
+    "returncode": 0,
+    "output": "적용: 기본 · EQ 없음 / 균형 설정",
+    "error": "",
+    "default": "alsa_output.usb-Sony_INZONE_H9_II-00.stereo-game"
+  },
+  {
+    "profile": "restore",
+    "returncode": 0,
+    "output": "적용: 변경 전 음색·지연 설정 복원",
+    "error": "",
+    "default": "alsa_output.usb-Sony_INZONE_H9_II-00.stereo-game"
+  },
+  {
+    "profile": "surround",
+    "returncode": 0,
+    "output": "적용: 서라운드 · Sony 기본 HRTF / 실험 구현",
+    "error": "",
+    "default": "inzone.sony-surround"
+  }
+]

@@ -1,0 +1,37 @@
+{
+  "url": "https://info.update.sony.net/HP002/APID001WN00/contents/0011/INZONEHub_Setup_1.0.19.0.exe",
+  "size": 144916520,
+  "sha256": "8cb73e7524281905ec3e5f52679bb757557ee069571ec8c68ceff89d0edd2540",
+  "version": "1.0.19.0",
+  "msi": {
+    "offset": 7212312,
+    "size": 136132608,
+    "sha256": "4c4ad6278dbbf29f231c091697c2a73e279ad211acadc4ee5edb5be85f22e35b"
+  },
+  "payload": {
+    "inzonehub.dll": {
+      "size": 38122120,
+      "sha256": "77082a578f25b2ef6722e256fd7f53de0d69678a8c852a7aaf4e8f569c542a5f"
+    },
+    "inzonevirtualizer.dll": {
+      "size": 2453600,
+      "sha256": "d3fb1a9619335af6f8256029714ac57ba53d643fb4ce9f43d8d50e3a20179860"
+    },
+    "shp_for_game_v2.0_512tap.hki": {
+      "size": 57952,
+      "sha256": "1a5ab53581ddb5320c2475fcb85cd6243c0b7472bbe339f14dc03c90bd8cf62d"
+    },
+    "wh_g910n_standard.ba": {
+      "size": 192,
+      "sha256": "9d9faae35a2db1ed16d277dbb73ea0e4e2bd96d85df5258593acf1dabf0797e2"
+    },
+    "downmix.hki": {
+      "size": 57952,
+      "sha256": "7f4bdc12b3885435a6305c9c138f3d66ee7da00874bdce7b5f0e12c21da9cdac"
+    },
+    "control.yaml": {
+      "size": 3283,
+      "sha256": "859c9cc66538ab11156783199c2dcd19687895e72e48e4693799389c9aab4621"
+    }
+  }
+}

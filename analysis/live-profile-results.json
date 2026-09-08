@@ -1,0 +1,85 @@
+[
+  {
+    "profile": "surround",
+    "result": "loaded and routed"
+  },
+  {
+    "profile": "fps",
+    "result": "loaded and routed"
+  },
+  {
+    "profile": "music",
+    "result": "loaded and routed"
+  },
+  {
+    "profile": "voice",
+    "result": "loaded and routed"
+  },
+  {
+    "profile": "balanced",
+    "result": "loaded and routed"
+  },
+  {
+    "profile": "restore",
+    "result": "loaded and routed"
+  },
+  {
+    "profile": "balanced",
+    "settings": {
+      "drc": 2,
+      "output_alc": true
+    },
+    "result": "DSP ports verified"
+  },
+  {
+    "profile": "voice",
+    "settings": {
+      "mic_agc": true
+    },
+    "result": "DSP ports verified"
+  },
+  {
+    "profile": "surround",
+    "settings": {
+      "drc": 1,
+      "output_alc": true,
+      "eq": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0
+      ],
+      "sound_mode": "immersive",
+      "base_eq": false
+    },
+    "result": "DSP ports verified"
+  },
+  {
+    "profile": "fps",
+    "settings": {
+      "drc": 1,
+      "output_alc": true,
+      "eq": [
+        -6,
+        -2,
+        2,
+        3,
+        2,
+        0,
+        2,
+        3,
+        1,
+        -2
+      ],
+      "sound_mode": "standard",
+      "base_eq": false
+    },
+    "result": "DSP ports verified"
+  }
+]

@@ -1,0 +1,10 @@
+{
+  "checks": [
+    "game start selects balanced",
+    "game exit restores music",
+    "manual choice remains while game runs",
+    "manual baseline survives game exit",
+    "watcher shutdown preserves manual choice"
+  ],
+  "restored_profile": "music"
+}
