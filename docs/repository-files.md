@@ -24,7 +24,7 @@
 | **도구 & 스크립트** | • `tools/fetch_assets.py`<br>• `tools/install_profiles.py`<br>• `tools/export_eq_tables.py`<br>• `tools/export_presets.py`<br>• `tools/disassemble.py` | • `tools/ilspycmd` (다운로드된 디컴파일러)<br>• `tools/.store/`, `.dotnet/`, `.nuget/` |
 | **분석 & 역분석** | • `docs/` (기술 보고서 및 아키텍처 문서)<br>• `analysis/README.md`<br>• `evidence/installer.json` (공식 URL 및 해시) | • `downloads/` (Sony 설치 파일 EXE/MSI)<br>• `analysis/payload/` (추출된 원본 바이너리)<br>• `analysis/decompiled/` (디컴파일 소스)<br>• `analysis/msi/`, `*.ole`, 원시 덤프 파일 |
 | **오디오 자산** | 없음 (로컬에서 정적 추출하여 생성) | • `assets/` (`sony-eq-tables.json`, `sony-presets.json`, HRTF/BA 파일 등) |
-| **테스트 & 검증** | • `tests/` (29개 단위/통합 테스트 코드)<br>• `analysis/*.json` (검토 완료된 요약 검증 보고서) | • 원시 오디오 녹음 파일 (`*.wav`, `*.f32`)<br>• 장치 원시 USB/HID 캡처 및 터미널 덤프 |
+| **테스트 & 검증** | • `tests/` (31개 단위 테스트 및 별도 통합 테스트 코드)<br>• `analysis/*.json` (검토 완료된 요약 검증 보고서) | • 원시 오디오 녹음 파일 (`*.wav`, `*.f32`)<br>• 장치 원시 USB/HID 캡처 및 터미널 덤프 |
 | **백업 데이터** | 없음 | • `backups/`, `~/.local/state/inzone-linux/backups` |
 
 ---
@@ -44,7 +44,7 @@
            │ (native/ C LADSPA DSP 플러그인 컴파일)
            ▼
        make check (or make test)
-           │ (단위 테스트 29종 실행)
+           │ (단위 테스트 31종 실행)
            ▼
        make install (or make all)
              (WirePlumber, udev 규칙, CLI 스크립트 설치)

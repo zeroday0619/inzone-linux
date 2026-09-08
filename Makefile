@@ -36,7 +36,7 @@ test: check
 
 help:
 	@printf '%s\n' \
-		'make / make install  Download, extract, build, and install for the desktop user.' \
+		'make / make install  Download, extract, build, and install the CLI, DSP, and configs.' \
 		'make fetch           Download and verify the pinned installer only.' \
 		'make assets          Download and extract the required runtime assets.' \
 		'make build           Prepare assets and build the native DSP plugin.' \
@@ -44,4 +44,6 @@ help:
 		'' \
 		'Variables: PYTHON=/usr/bin/python3, SUDO=sudo, INSTALL_HOME=$$HOME, FETCH_FLAGS=' \
 		'Offline: make FETCH_FLAGS=--offline' \
+		'Configs: profile templates, WirePlumber rules, a systemd user unit, and udev rules.' \
+		'Reinstall: back up existing files, refresh templates, and preserve restore/active profiles.' \
 		'Run make without sudo; administrator privileges are requested only for installation.'

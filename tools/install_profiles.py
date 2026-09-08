@@ -14,6 +14,9 @@ sys.path.insert(0,str(ROOT/'src'))
 from build_graph import build,GAME
 from sony_filters import export
 
+SYSTEM_LIBRARY_DIRECTORY=Path('/usr/lib/ladspa')
+UDEV_RULES_DIRECTORY=Path('/etc/udev/rules.d')
+
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
@@ -38,9 +41,10 @@ def main():
     subprocess.run(['make','-C',str(ROOT/'native')],check=True)
     digest=hashlib.sha256((ROOT/'native/inzone_dsp.so').read_bytes()).hexdigest()
     plugin_name='inzone_dsp_'+digest[:16]
-    system_library=Path('/usr/lib/ladspa')/(plugin_name+'.so')
+    system_library=SYSTEM_LIBRARY_DIRECTORY/(plugin_name+'.so')
     if os.getuid()==0:
-        shutil.copy2(ROOT/'configs/udev/70-inzone-h9-ii.rules','/etc/udev/rules.d/70-inzone-h9-ii.rules')
+        UDEV_RULES_DIRECTORY.mkdir(parents=True,exist_ok=True)
+        shutil.copy2(ROOT/'configs/udev/70-inzone-h9-ii.rules',UDEV_RULES_DIRECTORY/'70-inzone-h9-ii.rules')
         subprocess.run(['udevadm','control','--reload-rules'],check=True)
         system_library.parent.mkdir(parents=True,exist_ok=True)
         temporary=system_library.with_suffix('.so.tmp');shutil.copy2(ROOT/'native/inzone_dsp.so',temporary);temporary.chmod(0o755);temporary.replace(system_library)
@@ -59,9 +63,12 @@ def main():
     shutil.copy2(ROOT/'assets/sony-presets.json',assets/'sony-presets.json')
     (assets/'plugin.json').write_text(json.dumps({'name':plugin_name,'sha256':digest})+'\n')
     data.mkdir(parents=True,exist_ok=True);wp.mkdir(parents=True,exist_ok=True)
-    for name in ['fps','music','voice','balanced','original']:
-        dst=data/(name+'.conf')
-        if not dst.exists():shutil.copy2(ROOT/'configs'/(name+'.conf'),dst)
+    # Repository templates must receive updates; user DSP options are stored separately.
+    for name in ('fps','music','voice','balanced'):
+        shutil.copy2(ROOT/'configs'/(name+'.conf'),data/(name+'.conf'))
+    # The restore baseline must survive reinstalls, including local adjustments.
+    original=data/'original.conf'
+    if not original.exists():shutil.copy2(ROOT/'configs/original.conf',original)
     graph=build(assets,library)
     (data/'sony-surround.json').write_text(json.dumps(graph,ensure_ascii=False,indent=2)+'\n')
     config=json.loads('\n'.join(l for l in (data/'balanced.conf').read_text().splitlines() if not l.startswith('#')))
@@ -80,11 +87,21 @@ def main():
     if mpv.exists():mpv.write_text(mpv.read_text().replace('alsa_output.usb-Sony_INZONE_H9_II-00.iec958-stereo',GAME))
     if os.getuid()==0:
         owner=base.stat()
-        for directory in (data,assets,backup,modules,payload_copy,library.parent):
+        user_directories=(data,assets,backup,modules,payload_copy,library.parent)
+        for directory in user_directories:
             if not directory.exists():continue
             for path in [directory,*directory.rglob('*')]:
                 if not path.is_symlink():os.chown(path,owner.st_uid,owner.st_gid)
-        for path in (executable,unit,unit.parent,wp/'52-inzone-game-chat.conf',wp/'51-inzone-h9-ii.conf'):
+        # Atomic profile replacement and personalization require writable parent directories.
+        parents=set()
+        for directory in (*user_directories,executable.parent,unit.parent,wp):
+            if not directory.exists():continue
+            for path in (directory,*directory.parents):
+                if path==base:break
+                parents.add(path)
+        for path in parents:
+            if not path.is_symlink():os.chown(path,owner.st_uid,owner.st_gid)
+        for path in (executable,unit,wp/'52-inzone-game-chat.conf',wp/'51-inzone-h9-ii.conf'):
             os.chown(path,owner.st_uid,owner.st_gid)
     print('Installed. In the desktop user session run: inzone-profile surround')
     print('Backup:',backup)

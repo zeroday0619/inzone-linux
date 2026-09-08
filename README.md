@@ -40,6 +40,8 @@ Windows 전용 유틸리티인 **INZONE Hub 1.0.19.0**의 독점 기능(7.1ch �
 - **빌드 및 런타임 의존성**:
   - Python 3.10 이상
   - `python3-cryptography` (필터 복호화 및 개인화 파싱용)
+  - `pipewire-bin` (`pw-dump`, `pw-cat`, `pw-cli`, `pw-loopback` 및 Game/Chat 카드 프로파일)
+  - `pulseaudio-utils` (`pactl`을 통한 기본 출력 및 음량 제어)
   - 7-Zip (`7z` 또는 `7zz`)
   - `build-essential` (C 컴파일러 `gcc` / `make`)
   - `ladspa-sdk` (LADSPA 헤더)
@@ -55,7 +57,7 @@ Windows 전용 유틸리티인 **INZONE Hub 1.0.19.0**의 독점 기능(7.1ch �
 Debian/Ubuntu 계열 배포판:
 ```sh
 sudo apt update
-sudo apt install python3 python3-cryptography 7zip build-essential ladspa-sdk
+sudo apt install python3 python3-cryptography pipewire-bin pulseaudio-utils 7zip build-essential ladspa-sdk
 ```
 > **참고**: `.NET 10 SDK`는 배포판 패키지 관리자 또는 Microsoft 공식 가이드에 따라 준비하세요.
 
@@ -66,6 +68,26 @@ make
 ```
 
 > **주의**: 전체 명령을 `sudo make`로 실행하지 마세요. 관리자 권한은 마지막 단계에서 udev 규칙 등록 및 신뢰 경로(`/usr/lib/ladspa`) 라이브러리 복사에만 `sudo`를 통해 요청됩니다.
+
+`make install`은 `tools/install_profiles.py`를 호출하여 다음 설정 파일을 설치합니다. `~`는 `INSTALL_HOME`으로 지정한 데스크톱 사용자의 홈 디렉터리입니다.
+
+| 저장소 설정 파일 | 설치 경로 |
+|---|---|
+| `configs/fps.conf`, `music.conf`, `voice.conf`, `balanced.conf` | `~/.config/inzone-h9-ii/` |
+| `configs/original.conf` | `~/.config/inzone-h9-ii/original.conf` (없을 때만 설치) |
+| `configs/52-inzone-game-chat.conf` | `~/.config/wireplumber/wireplumber.conf.d/52-inzone-game-chat.conf` |
+| `configs/systemd/inzone-profile-auto.service` | `~/.config/systemd/user/inzone-profile-auto.service` |
+| `configs/udev/70-inzone-h9-ii.rules` | `/etc/udev/rules.d/70-inzone-h9-ii.rules` |
+
+재설치 시 기존 사용자 설치 파일을 `~/.local/state/inzone-linux/backups/`에 백업한 후 기본 프로파일 4개를 갱신합니다. 기존 `original.conf`, 활성 프로파일 `51-inzone-h9-ii.conf`, 사용자 DSP 설정 `profile-settings.json`, 자동 전환 규칙 `auto-profiles.json`은 보존합니다. 최초 설치에서는 `balanced.conf`를 활성 프로파일로 복사하고, `surround.conf`는 추출한 에셋으로 생성합니다. 프로파일 전환 시 선택한 설정만 활성 파일에 적용됩니다.
+
+### 3. 장치 권한 적용 및 프로파일 활성화
+
+설치가 완료되면 USB 동글을 분리한 뒤 다시 연결하여 udev 장치 접근 권한을 적용합니다. 규칙 다시 읽기만으로는 이미 연결된 장치의 권한이 갱신되지 않습니다. 데스크톱 사용자 세션에서 다음 명령으로 WirePlumber 설정과 서라운드 프로파일을 활성화합니다:
+
+```sh
+~/.local/bin/inzone-profile surround
+```
 
 ### 주요 Make 타깃 안내
 ```sh
@@ -78,7 +100,7 @@ make assets
 # 3. 네이티브 C LADSPA DSP 플러그인(inzone_dsp.so) 빌드
 make build
 
-# 4. 전체 단위 테스트(29개 테스트) 실행 (시스템 설치 없음)
+# 4. 전체 단위 테스트(31개 테스트) 실행 (시스템 설치 없음)
 make check
 
 # 5. 오프라인 모드 (이미 다운로드된 인스톨러와 도구 재사용)
@@ -331,7 +353,7 @@ inzone-profile --auto-remove game.exe
 
 ## 테스트 및 검증
 
-모든 구현은 Linux 네이티브 환경에서 검증되었으며, 29개의 단위 테스트를 제공합니다:
+모든 구현은 Linux 네이티브 환경에서 검증되었으며, 31개의 단위 테스트를 제공합니다:
 
 ```sh
 # 전체 단위 테스트 실행
