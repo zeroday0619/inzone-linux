@@ -1,63 +1,79 @@
-# Linux 구현 완성도 및 테스트 검증 감사 보고서 (Implementation & Verification Audit)
+# Linux 구현 및 검증 범위 (Implementation & Verification Audit)
 
-이 문서는 Sony INZONE H9 II의 Linux 구현에 대한 기능 완성도, 단위/통합 테스트 스위트의 검증 범위, 그리고 품질 보증(QA) 결과를 종합 정리한 기술 감사 보고서입니다.
+이 문서는 Swift 구현의 검증 경로와 이전 구현에서 수집한 측정 결과를 구분합니다. CLI, TUI, 설정 관리, 자산 추출, 진단 도구와 테스트는 Swift로 구현합니다. 실시간 LADSPA DSP는 `Sources/InzoneDSP/`의 Embedded Swift 구현이며, `native/Makefile`이 공유 라이브러리를 생성합니다. `Sources/CLADSPA/`에는 C ABI 선언만 있습니다.
 
----
+## 1. 검증 기준
 
-## 1. 검증 개요 및 목적 (Verification Objectives)
+- **DSP 정합성**: 블록 크기, In-place 처리와 재초기화가 출력에 미치는 영향을 검사합니다. PipeWire 출력 비교의 기준이 Linux LADSPA 구현인지 Sony 원본 엔진인지 명시합니다.
+- **입력 무결성**: 손상된 필터, 잘못된 설정값, 비정상 HID 패킷과 자산 해시 불일치를 거부합니다.
+- **상태 보존**: 프로파일 전환과 설정 갱신 실패 시 기존 파일 및 세션 상태를 복원하는지 검사합니다.
+- **검증 범위 분리**: 테스트 소스의 존재, 테스트 실행 성공, 임시 경로 설치, 실제 설치와 실기기 작동을 별도로 기록합니다.
 
-본 프로젝트는 독점 상용 윈도우 유틸리티(INZONE Hub)의 핵심 오디오 DSP 알고리즘과 USB HID 하드웨어 제어 프로토콜을 리눅스(PipeWire/WirePlumber) 환경으로 이식하는 것을 목표로 합니다. 신호 처리의 정밀도, 오디오 세션의 안정성, 하드웨어 제어의 안전성을 입증하기 위해 다각적인 테스트 스위트를 구축하여 검증을 완료했습니다.
+## 2. Swift 테스트 및 진단 매핑
 
-### 핵심 품질 보증 원칙
-1. **신호 처리 정밀도**: 네이티브 C 엔진(`inzone_dsp.so`)의 출력이 소니 원본 알고리즘의 동작 스펙 및 수치적 허용 한계(ULP)와 일치해야 합니다.
-2. **실시간 안정성**: PipeWire 실시간 오디오 루프 내에서 메모리 누수, 지연(XRun), 클리핑, 무음 복귀 이상이 발생하지 않아야 합니다.
-3. **하드웨어 안전성**: USB HID 제어 명령 수행 시 장비가 벽돌(Brick)되거나 손상되지 않도록 허용된 레지스터 값만 주입하고 즉각적인 롤백 검증을 거쳐야 합니다.
-4. **결함 격리 (Fault Isolation)**: 잘못된 입력(손상된 개인화 파일, 비정상 설정값 등)이 주입되더라도 기존 정상 상태를 보존하고 안전하게 복구되어야 합니다.
+| 검증 영역 | 구현 위치 | 테스트·진단 경로 | 검증 범위 |
+|---|---|---|---|
+| 네이티브 DSP | `Sources/InzoneDSP/Plugin.swift`, `Dynamics.swift`, `SpatialALC.swift` | `Tests/InzoneCoreTests/NativeDSPTests.swift`, `DSPGoldenTests.swift`, `Fixtures/dsp-golden.json` | LADSPA 계약, 기존 C 출력 해시, 제어값 변경, 비유한 입력, 가변 블록, In-place 처리, 재활성화와 독립 인스턴스 |
+| 필터 복호화·개인화 | `Sources/InzoneCore/FilterCrypto.swift`, `Filters.swift` | `Tests/InzoneCoreTests/FilterTests.swift` | MD5/SHA-256 및 AES 알려진 정답, HKI/BA 구조, Cipher 7, 안정성·유한값 검사, 정규화, 원자적 가져오기 |
+| 설정·EQ·Windows 호환성 | `Sources/InzoneCore/Settings.swift`, `Presets.swift`, `GraphRenderer.swift` | `Tests/InzoneCoreTests/SettingsTests.swift`, `PresetsTests.swift` | 설정값 검증, 그래프 순서, 프리셋, JSONC·enum 파싱, Windows 왕복 변환 및 손실 변환 거부 |
+| HID 통신 | `Sources/InzoneCore/Device.swift` | `Tests/InzoneCoreTests/DeviceTests.swift` | 패킷 인코딩·디코딩, 체크섬, 거래 ID 및 비동기 알림 처리. 실제 USB 쓰기는 별도 검증 |
+| 프로파일·자동화 | `Sources/InzoneCore/ProfileController.swift`, `Automation.swift` | `Tests/InzoneCoreTests/ProfileControllerTests.swift`, `AutomationTests.swift` | 파일·상태 복구, 프로세스 이름·우선순위·디바운스, 수동 선택 보존 |
+| CLI·설치 | `Sources/InzoneCLI/`, `Sources/InzoneToolsCore/` | `Tests/InzoneCoreTests/CommandLineTests.swift`, `Tests/InzoneToolsTests/InstallationTests.swift` | 필수 플러그인·udev 다이제스트, 사용자 단계의 root·홈 소유 UID 거부, live·staging 시스템 단계의 권한 분리, 설치 파일 배치, 기존 사용자 설정 보존, 백업 및 자산 무결성 |
+| SwiftTUI | `Sources/InzoneTUI/InzoneTUI.swift` | `Tests/InzoneTUITests/TUITests.swift`, `TerminalSessionTests.swift` | 화면 렌더링, 키 입력, 입력값 검증, 종료 처리와 실제 PTY 상호작용. 하드웨어 조작은 별도 검증 |
+| 자산 추출·역어셈블리 | `Sources/InzoneToolsCore/` | `Tests/InzoneToolsTests/` | 설치 파일 무결성, 추출·디컴파일 경로, EQ·프리셋 데이터, PE RVA 범위 |
+| PipeWire 임펄스·DSP | `Sources/InzoneDiagnostics/` | `inzone-tools diagnose-impulse`, `diagnose-sfx` | 채널별 응답, 피크·무음 복귀, PipeWire 출력과 Linux LADSPA 기준 출력 비교 |
+| 실행 중인 세션 | `Sources/InzoneDiagnostics/` | `inzone-tools diagnose-live-profiles`, `diagnose-live-automation` | 실제 프로파일 로드·라우팅, 자동 전환 및 원래 상태 복원 |
 
----
+Swift 패키지는 Swift 6.3 이상을 요구하며, TUI는 `minacle/swift-tui` 0.12.0을 사용합니다. 테스트는 XCTest와 Swift Testing으로 작성합니다. 로컬 Sony 자산이 없는 경우 관련 테스트가 건너뛰어질 수 있으므로, 성공 건수와 건너뛴 항목을 함께 확인해야 합니다.
 
-## 2. 테스트 스위트 매핑 및 검증 현황 (Verification Matrix)
+```sh
+make check
+```
 
-| 검증 영역 | 검증 대상 모듈 | 테스트 스크립트 | 검증 항목 및 기준 | 상태 |
-|---|---|---|---|---|
-| **네이티브 DSP 커널** | `native/ladspa.c`<br>`native/dynamics.c`<br>`native/spatial_alc.c` | `tests/test_dsp.py` | • 가변 버퍼 크기(64~1024 샘플) 처리<br>• In-place 버퍼 입출력 안정성<br>• DRC 상향 압축 및 확장 커브<br>• 공간 ALC 32샘플 지연 및 게인 클램프 | **통과 (Pass)** |
-| **공간 음향 및 음장** | `src/sony_filters.py`<br>`src/build_graph.py` | `tests/pipewire_impulse.py`<br>`tests/pipewire_sfx.py` | • 8채널 가상 서라운드 임펄스 응답 분리도<br>• 공간 처리 후 음량 제한 및 무음 복귀<br>• PipeWire 인라인 필터 그래프와 LADSPA 출력 일치 | **통과 (Pass)** |
-| **필터 복호화 및 개인화** | `src/sony_filters.py`<br>`src/personalization.py` | `tests/test_filters.py`<br>`tests/test_personalization.py` | • Cipher 5/7 키 유도 및 AES 복호화<br>• 7단 Biquad 극점 안정성(단위원 내부)<br>• FFT 빈 정규화(상한 18.0) 및 손상 파일 거부 | **통과 (Pass)** |
-| **EQ 및 프로파일 호환성** | `src/sony_presets.py`<br>`src/inzone_settings.py` | `tests/test_presets.py`<br>`tests/test_settings.py` | • 소니 10밴드 공식 계수 테이블 무결성<br>• 7대 공식 프리셋 파라미터 일치<br>• Windows `SoundProfile.json` 왕복(Roundtrip) 변환 | **통과 (Pass)** |
-| **장치 HID 통신** | `src/inzone_device.py` | `tests/test_device.py`<br>`analysis/device-write-verification.json` | • HCI 패킷 인코딩/디코딩 및 체크섬 검증<br>• ANC/사이드톤/밸런스 레지스터 쓰기 및 원복<br>• 비동기 알림(0xA0) 필터링 | **통과 (Pass)** |
-| **동적 프로파일 전환** | `src/inzone-profile.py`<br>`src/profile_automation.py` | `tests/live_profiles.py`<br>`tests/live_automation.py` | • WirePlumber 동적 리로드 및 싱크 바인딩<br>• 실행 프로세스 감지 및 2초 디바운스 전환<br>• 앱 종료 시 원복 및 수동 조작 우선권 보장 | **통과 (Pass)** |
-| **TUI 인터페이스** | `src/device_tui.py`<br>`src/inzone-profile.py` | `tests/tui_smoke.py`<br>`analysis/tui-results.json` | • 터미널 72×24 해상도 렌더링<br>• 키 입력 네비게이션 및 모달 창 처리<br>• 비정상 종료 시 터미널 상태 복원 | **통과 (Pass)** |
-| **자산 수집 및 빌드** | `tools/fetch_assets.py`<br>`Makefile` | `tests/test_fetch_assets.py` | • 공식 인스톨러 SHA-256 무결성 검증<br>• HTTP 리다이렉트 거부 보안 검사<br>• 공개/비공개 파일 격리 규칙 준수 | **통과 (Pass)** |
+`make check`는 빌드와 자산 준비 후 Swift 테스트를 실행합니다. 설치 Makefile은 비특권 `install-all`을 한 번 실행합니다. 이 조정 명령은 실행 파일을 먼저 봉인하고, 플러그인과 udev 규칙의 별도 봉인 스냅샷과 다이제스트를 사용자 경로 쓰기 전에 준비합니다. 사용자 설치 후 `/usr/bin/sudo`에는 세 procfd와 두 다이제스트만 전달합니다. live root 단계는 저장소를 받지 않으며, 같은 descriptor에서 두 데이터 스냅샷의 regular-file 형식, 크기, 필수 봉인과 다이제스트를 검증한 뒤 그 데이터를 씁니다. 권한 경계 명령은 작업 디렉터리 `/`와 상속한 표준 입출력 descriptor를 사용하고 임시 캡처 파일을 만들지 않습니다. 사용자 단계는 root를 거부하고 홈 소유 UID를 확인합니다. live 시스템 단계는 root와 실행 중인 memfd의 필수 봉인을 요구하며, staging 단계는 root를 거부하고 저장소 기반 입력을 유지합니다. 확보한 설치 파일로 자산을 준비하려면 `make check FETCH_FLAGS=--offline`을 사용합니다. 실제 PipeWire 진단은 별도로 실행하며, 프로파일·자동화 진단은 현재 오디오 세션과 설정을 변경한 뒤 복원합니다.
 
----
+```sh
+swift run inzone-tools diagnose-impulse
+swift run inzone-tools diagnose-sfx
+swift run inzone-tools diagnose-live-profiles
+swift run inzone-tools diagnose-live-automation
+```
 
-## 3. 핵심 영역별 기술 검증 상세
+## 3. 전환 전 측정 기록
 
-### 3.1. 오디오 신호 처리 정밀도 검증 (`test_dsp.py`, `pipewire_sfx.py`)
-- **버퍼 크기 불변성**: 호스트 환경에 따라 달라지는 다양한 오디오 버퍼 크기(32, 64, 128, 256, 512, 1024 프레임)에서 필터 상태(History state)가 끊김 없이 연속적으로 유지됨을 확인했습니다.
-- **In-place 메모리 연산**: LADSPA 명세에 따라 입력 버퍼와 출력 버퍼의 포인터 주소가 동일한 경우에도 메모리 충돌이나 왜곡 없이 정상 연산됨을 검증했습니다.
-- **ALC 룩어헤드 지연**: 8프레임 블록 연산과 선독 버퍼를 결합하여 정확히 32샘플의 지연 시간이 일정하게 유지되는 것을 임펄스 신호로 계측했습니다.
+아래 JSON은 Swift 전환 전에 기존 제어·진단 코드와 C DSP를 사용하여 수집한 기록입니다. 파일을 보존하며, Swift 구현으로 재측정한 결과로 간주하지 않습니다. 원본 보고서에 없는 정확도, 지연, 환경 정보 또는 검사 범위를 추가로 추정하지 않습니다.
 
-### 3.2. 암호학 및 수학적 무결성 검증 (`test_filters.py`, `test_personalization.py`)
-- **키 유도 및 MD5 검증**: `INZONEVirtualizer.dll`에서 추출한 셀렉터 테이블과 상수 데이터를 바탕으로 유도된 AES-128 키를 통해 `standard_hrtf.hki`와 `downmix.hki`의 복호화 평문이 헤더의 MD5와 정확히 일치함을 확인했습니다.
-- **Biquad IIR 극점(Poles) 안정성**: 복호화된 7개 바이쿼드 섹션의 전달함수 분모 계수($a_1, a_2$)를 분석하여 극점의 크기가 $|z| < 1$ 범위 내에 위치함을 수학적으로 증명했습니다.
-- **Cipher 7 의사난수 복호화**: 사용자 개인화 프로파일에 적용되는 Cipher 7 PRNG 시드 수열 갱신 공식이 소니 공식 앱에서 추출한 레코드와 비트 단위로 일치함을 확인했습니다.
-- **보안 격리**: 훼손된 HKI 파일(잘못된 체크섬, 손상된 탭 수 등)이 주입될 경우 시스템이 오류를 발생시키고 기존 기본 HRTF를 유지하도록 예외 처리를 검증했습니다.
+| 보고서 | 기록된 결과 | 적용 범위 |
+|---|---|---|
+| [`device-write-verification.json`](../analysis/device-write-verification.json) | 사이드톤 `4 → 3 → 4` | 해당 필드의 쓰기·복원 사례. 모든 HID 제어 항목의 실기기 검증을 입증하지 않음 |
+| [`live-profile-results.json`](../analysis/live-profile-results.json) | 6개 프로파일 로드·라우팅 및 기록된 DSP 포트 확인 | 당시 프로파일과 옵션 조합 |
+| [`profile-switch-results.json`](../analysis/profile-switch-results.json) | 6개 프로파일 전환의 종료 코드 0 및 기본 싱크 | 전환 소요 시간은 기록되지 않음 |
+| [`live-automation-results.json`](../analysis/live-automation-results.json) | 게임 시작·종료 전환, 수동 선택 보존, 종료 후 `music` 복원 | 보고서에 나열된 자동화 시나리오 |
+| [`install-results.json`](../analysis/install-results.json) | 최초 설치·반복 설치·백업 플래그 `true` | 세부 파일 목록과 권한은 보고서에 기록되지 않음 |
+| [`tui-results.json`](../analysis/tui-results.json) | 이전 Curses UI의 80×24 터미널, 6개 화면, 변경 적용 없음, 종료 코드 0 | 이전 UI의 화면 이동 기록. SwiftTUI·하드웨어 쓰기·마이크 동작의 검증 결과는 아님 |
 
-### 3.3. 하드웨어 HID 제어 및 안전성 검증 (`test_device.py`, `analysis/device-write-verification.json`)
-- **비파괴적 하드웨어 테스트**: 실제 연결된 INZONE H9 II 헤드셋에서 사이드톤(Sidetone) 레지스터를 `4`에서 `3`으로 변경한 후, 즉시 상태를 재조회하여 반영 여부를 확인하고, 다시 원래 값인 `4`로 안전하게 복원하는 실증 테스트를 완료했습니다.
-- **패킷 무결성**: 64바이트 HID 리포트의 헤더, 소니 시크릿 키(`0xC396`), 주소 바이트(`0x41`), 트랜잭션 시퀀스 및 8비트 덧셈 체크섬이 공식 스펙과 완벽히 일치함을 확인했습니다.
+## 4. Swift 전환 이후 검증 상태
 
-### 3.4. PipeWire 오디오 세션 런타임 검증 (`live_profiles.py`, `live_automation.py`)
-- **동적 WirePlumber 리로드**: 프로파일 변경 시 데스크톱 세션 전체가 중단되지 않고 WirePlumber 서비스의 리셋(`reset-failed` 및 `restart`)을 통해 약 1초 이내에 오디오 노드와 라우팅 링크가 재구성됨을 확인했습니다.
-- **프로세스 감지 디바운스**: 게임 실행 시 즉각적인 전환으로 인한 지연을 방지하기 위해 2초의 유지 시간(Debounce)을 검증하고, 여러 게임 실행 시 우선순위(Priority) 큐에 따른 전환 동작을 검증했습니다.
+2026-09-09에 `feat/swift-reimplementation` 작업 트리(기준 커밋 `c9ed0d2`)에서 확인했습니다. 환경은 Debian forky/sid x86_64, Swift 6.3.3, PipeWire 1.6.8입니다. 실제 데스크톱 세션의 WirePlumber는 0.5.15이며 아래 격리 진단에서는 사용하지 않았습니다.
 
----
+| 명령·검사 | 결과 |
+|---|---|
+| `make check -o assets` | 이전에 Swift로 추출한 로컬 에셋 재사용. 릴리스 실행 파일 2개와 Embedded Swift DSP 빌드, XCTest 137개와 Swift Testing 9개 통과, 실패·건너뛰기 0개 |
+| 보안 수정 후 격리 빌드의 전체 XCTest 번들 | 최신 소스로 빌드한 XCTest 192개 통과, 실패·건너뛰기 0개. 공유 `.build` 잠금 때문에 `make check` 래퍼와 Swift Testing 9개는 이 최종 재실행에서 반복하지 않음 |
+| C 구현과의 수치 비교 | 6개 descriptor. 유한값 87개 시나리오·4,489,216개 출력 샘플의 Float 비트 일치. 비유한 상태를 만들던 2개 시나리오는 보안 복구를 위해 의도적으로 차이. 기준 C 소스·ELF·컴파일 옵션은 golden fixture에 기록 |
+| `inzone-tools diagnose-impulse` | Swift DSP를 격리 서버에 로드. 출력 379,392개 샘플, 8개 채널 응답, 최대 피크 1.0, 무음 꼬리 피크 0.0 |
+| `inzone-tools diagnose-sfx` | 빌드한 Swift DSP를 임시 LADSPA 경로에 배치. 3개 조합 각각 720,000개 샘플, 동일 플러그인의 직접 실행 대비 최대 절대 오차·RMS 오차 0.0, 전송 오프셋 2,304프레임 |
+| `readelf -d .build/release/inzone-profile` | Swift 공유 런타임 의존성 없음. Linux 시스템 라이브러리는 동적 링크 |
+| DSP ELF 검사 | 34,512바이트. 동적 의존성은 `libm.so.6`·`libc.so.6`, 공개 심볼은 `ladspa_descriptor` 하나. RPATH/RUNPATH 없음, BIND_NOW와 DT_FINI 설정 |
+| 반복 로드·해제 | 1,005회 load/instantiate/activate/run(0)/cleanup/unload 성공. `mallinfo2().uordblks` 표본은 87,216→87,216바이트, 해제 후 플러그인 매핑 없음 |
 
-## 4. 품질 감사 결론 (Conclusion)
+PipeWire 결과는 [`impulse-results.json`](../analysis/impulse-results.json)과 [`pipewire-sfx-results.json`](../analysis/pipewire-sfx-results.json)에 기록했습니다. 두 보고서의 `plugin_sha256`은 `e93cf211a0d60b283a1a9396e3f523276494f9f92775cc0abf0f0d6f3a0b8cd0`으로 빌드한 Swift 플러그인과 일치합니다. 전송 오프셋은 격리된 시험 연결의 정렬값이며 헤드셋 지연 측정값이 아닙니다. PipeWire 출력 비교의 기준은 동일한 Swift LADSPA 구현의 직접 실행이며 Sony Windows 엔진과의 비교가 아닙니다. 설치 및 PTY 테스트는 임시 홈, 비특권 staging 시스템 경로와 가상 터미널을 사용했습니다. 실제 root 권한의 live 시스템 설치는 실행하지 않았습니다.
 
-본 Linux 구현은 소니 공식 유틸리티(INZONE Hub 1.0.19.0)의 주요 기능에 대해 다음과 같은 결과를 달성했습니다:
+오디오 콜백과 Swift DSP 호출 경로는 최적화 빌드에서 `@_noLocks` 검사를 통과했습니다. 외부 libm의 성능 계약은 C 선언의 `swift_attr`로 명시하며, Swift 컴파일러가 libm 내부 구현을 증명하는 것은 아닙니다. Embedded Swift는 Swift 6.3.3의 실험적 컴파일 모드입니다. 이 기록은 해당 환경의 수치·로딩·격리 오디오 검사이며 모든 환경의 최악 실행시간이나 장시간 무중단 동작을 보장하지 않습니다.
 
-1. **완전성 (Completeness)**: 7.1 공간 음향, 전용 10밴드 EQ, 7대 프리셋, 하드웨어 ANC/주변소리/사이드톤/밸런스 제어, 자동 프로파일 전환 등 실사용에 필요한 핵심 기능이 100% 구현되었습니다.
-2. **신뢰성 (Reliability)**: 29개의 자동화된 단위 테스트 스위트 및 실시간 통합 검사를 통과하여 프로덕션 수준의 안정성을 확보했습니다.
-3. **독립성 (Clean-room)**: Windows 바이너리를 일체 구동하지 않는 순수 Linux 네이티브 C 및 Python 스택으로 완성되었습니다.
+`swift-terminal` 0.0.2에는 Linux import 순서 보정을 적용했습니다. SwiftPM의 로컬 의존성 재정의 경고와 제거 조건은 [해당 소스 기록](../Vendor/swift-terminal/UPSTREAM.md)에 설명합니다.
+
+- **Verification required — 실제 설치**: Swift 설치 도구를 통한 사용자 경로 배치, 소유권, 재설치와 root 권한의 live 시스템 설치 및 서비스 활성화.
+- **Verification required — 실기기 HID**: Swift 통신 구현으로 조회·쓰기·재조회·복원을 수행한 결과.
+- **Verification required — 실제 오디오 세션**: 헤드셋과 데스크톱 세션을 사용한 Swift 프로파일·자동화 진단 결과.
+- **Verification required — 장치 연결 TUI**: SwiftTUI에서 하드웨어 설정과 마이크 테스트를 수행한 결과.
