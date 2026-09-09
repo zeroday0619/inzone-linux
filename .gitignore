@@ -43,18 +43,28 @@
 *.wav
 *.f32
 
-# Build, Python, editor and local configuration files.
+# Swift Package Manager state and generated Swift artifacts.
+.build/
+.swiftpm/
+*.swiftmodule
+*.swiftdoc
+*.swiftsourceinfo
+*.abi.json
+*.dia
+*.dSYM/
+*.profraw
+*.profdata
+
+# Native build and coverage artifacts.
 *.so
 *.so.*
 *.o
 *.a
-__pycache__/
-*.py[cod]
-.venv/
-venv/
-.pytest_cache/
-.coverage
-htmlcov/
+*.d
+*.gcda
+*.gcno
+
+# Editor files and local configuration.
 *.log
 *.tmp
 *.swp

@@ -1,8 +1,20 @@
-CC ?= cc
-CFLAGS ?= -O2 -Wall -Wextra -Werror -ffp-contract=off
+SWIFTC ?= swiftc
+SWIFT_DSP_FLAGS ?= -O -whole-module-optimization
+MODULE_CACHE ?= ../.build/native-module-cache
+SWIFT_SOURCES := $(wildcard ../Sources/InzoneDSP/*.swift)
+
+.PHONY: all install
 all: inzone_dsp.so
-inzone_dsp.so: ladspa.c dynamics.c spatial_alc.c dynamics.h spatial_alc.h
-	$(CC) $(CFLAGS) -Wno-missing-field-initializers -fPIC -shared -o $@ ladspa.c dynamics.c spatial_alc.c -lm
+inzone_dsp.so: $(SWIFT_SOURCES) ../Sources/CLADSPA/include/header.h ../Sources/CLADSPA/module.modulemap exports.map Makefile
+	env -u CC -u CXX -u LD -u AR -u CFLAGS -u CXXFLAGS -u LDFLAGS "$(SWIFTC)" \
+		-swift-version 6 -module-name InzoneDSP -parse-as-library $(SWIFT_DSP_FLAGS) \
+		-enable-experimental-feature Embedded \
+		-module-cache-path "$(MODULE_CACHE)" -I ../Sources/CLADSPA \
+		-emit-library $(SWIFT_SOURCES) -lm \
+		-Xlinker --version-script=exports.map -Xlinker --exclude-libs=ALL \
+		-Xlinker -z -Xlinker now -Xlinker -fini -Xlinker inzone_dsp_finalize \
+		-o "$@.new"
+	mv "$@.new" "$@"
 
 PLUGIN_HASH = $(shell sha256sum inzone_dsp.so 2>/dev/null | cut -c1-16)
 install: inzone_dsp.so

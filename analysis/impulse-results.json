@@ -1,6 +1,5 @@
 {
-  "samples": 375808,
-  "channel_impulse_peaks": [
+  "channel_impulse_peaks" : [
     0.06927239149808884,
     0.07606062293052673,
     0.04746051877737045,
@@ -10,7 +9,9 @@
     0.16040080785751343,
     0.13329526782035828
   ],
-  "peak": 1.0,
-  "silence_tail_peak": 0.0,
-  "checks": "finite output, eight channel responses, ALC bound and silence recovery"
+  "checks" : "finite output, eight channel responses, ALC bound and silence recovery",
+  "peak" : 1,
+  "plugin_sha256" : "e93cf211a0d60b283a1a9396e3f523276494f9f92775cc0abf0f0d6f3a0b8cd0",
+  "samples" : 379392,
+  "silence_tail_peak" : 0
 }

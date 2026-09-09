@@ -1,6 +1,8 @@
 # INZONE Hub 1.0.19.0 및 H9 II 정적/동적 역분석 기술 분석서
 
-이 문서는 Sony 공식 유틸리티인 **INZONE Hub 1.0.19.0**과 **INZONE H9 II (MDR-G900N / 모델 코드 YY2987)** 게이밍 헤드셋의 오디오 DSP 알고리즘 및 USB HID 제어 프로토콜을 분석하여 Linux (PipeWire / WirePlumber / LADSPA) 환경에 완벽히 재구현하기 위해 정리한 기술 보고서입니다.
+이 문서는 Sony 공식 유틸리티인 **INZONE Hub 1.0.19.0**과 **INZONE H9 II (MDR-G900N / 모델 코드 YY2987)** 게이밍 헤드셋의 오디오 DSP 알고리즘 및 USB HID 제어 프로토콜을 분석하여 Linux (PipeWire / WirePlumber / LADSPA) 환경에 재구현하기 위해 정리한 기술 보고서입니다.
+
+파일 해시, RVA와 프로토콜 분석은 아래에 명시한 원본 버전을 기준으로 합니다. 현재 제어·추출·진단 도구와 실시간 DSP는 `Sources/`의 Swift 구현입니다. DSP는 `Sources/InzoneDSP/`에서 구현하며, Embedded Swift로 LADSPA 공유 라이브러리를 생성합니다. 기존 동적 측정 결과와 Swift 이식 검증의 적용 범위는 [검증 감사 문서](completion-audit.md)에서 구분합니다.
 
 ---
 
@@ -31,7 +33,20 @@ MSI File 테이블(568개 행, 행당 18바이트, 열 기준 정렬) 분석 결
 - 서라운드가 꺼진 일반 상태에서는 `downmix.hki`가 선택되고 모델 BA 필터는 적용되지 않습니다.
 - 공간 ALC(Automatic Level Control) 설정은 가상화 필터 적용 이후의 독립 파이프라인 스테이지로 처리됩니다.
 
-> 본 프로젝트에서는 Windows 바이너리나 인스톨러를 직접 실행하지 않고, Python 스크립트(`tools/fetch_assets.py` 또는 `make assets`)를 통해 정적 오프셋 검증 및 무결성 검사 후 필요한 리소스만을 추출하여 사용합니다.
+자산 추출은 Swift 도구 `inzone-tools fetch` 또는 `make assets`로 수행합니다. 설치 파일과 Windows 바이너리를 대상 프로그램으로 실행하지 않으며, 정적 오프셋 검증 및 무결성 검사 후 리소스를 추출합니다. MSI/CAB 해제와 관리형 코드 디컴파일에는 외부 도구를 사용합니다.
+
+저장소 최상위 디렉터리에서 다음 명령을 실행합니다. `--offline`은 이미 확보한 로컬 설치 파일을 사용하며, 필요한 외부 추출 도구는 별도로 준비해야 합니다.
+
+```sh
+swift run inzone-tools fetch --offline
+swift run inzone-tools export-filters analysis/payload assets
+swift run inzone-tools export-eq --payload analysis/payload --decompiled analysis/decompiled --output assets
+swift run inzone-tools export-presets --payload analysis/payload --decompiled analysis/decompiled --output assets
+objdump -d -M intel analysis/payload/inzonevirtualizer.dll > analysis/virtualizer.asm
+swift run inzone-tools disassemble 0x19ae0 0x19c00 --input analysis/virtualizer.asm
+```
+
+필터 복호화와 파싱은 `Sources/InzoneCore/FilterCrypto.swift` 및 `Filters.swift`, EQ·프리셋 추출과 RVA 범위 조회는 `Sources/InzoneToolsCore/AssetExport.swift`에서 구현합니다. `disassemble`은 기존 역어셈블리 텍스트를 읽으며, 원본 DLL의 디코딩은 앞선 `objdump` 명령이 수행합니다.
 
 ---
 
@@ -131,7 +146,7 @@ Linux PipeWire 7.1 오디오 스트림은 아래 표와 같이 HKI 파일의 방
 | **SR** (Side Right) | 110 | 90 | 4 | 측면 우측 110° |
 
 - **LFE 처리**: HKI 내 유일하게 좌우 대칭 무지향성 특성을 지닌 레코드(0/0)를 사용합니다.
-- **슬롯 배열**: 네이티브 C 엔진(`native/ladspa.c`)의 14개 입력 배열 중 7.1ch 슬롯은 `[1, 2, 0, 13, 5, 6, 3, 4]`로 초기화됩니다.
+- **슬롯과 Linux 채널 연결**: 표의 슬롯 번호는 Sony 원본 엔진의 방향 배열을 기준으로 합니다. 현재 Linux 구현은 `Sources/InzoneCore/Filters.swift`의 방위각·극각 매핑으로 채널별 FIR 파일을 생성하고, `GraphRenderer.swift`에서 PipeWire 채널을 연결합니다.
 
 ### 4.2. USB 하드웨어 엔드포인트 및 ALSA 구성
 INZONE H9 II USB 동글(VID `054c`, PID `0fa8`)은 2개의 독립된 재생 PCM 디바이스와 1개의 녹음 PCM 디바이스를 제공합니다.
@@ -144,7 +159,7 @@ INZONE H9 II USB 동글(VID `054c`, PID `0fa8`)은 2개의 독립된 재생 PCM 
 
 ## 5. DSP 신호 처리 파이프라인 복원
 
-실시간 오디오 처리는 네이티브 C 공유 라이브러리(`native/inzone_dsp.so`)와 PipeWire filter-chain 모듈을 통해 수행됩니다.
+실시간 오디오 처리는 Embedded Swift 공유 라이브러리(`native/inzone_dsp.so`)와 PipeWire filter-chain 모듈을 통해 수행됩니다. FIR 컨볼루션은 PipeWire 노드가 처리하고, Biquad·ALC·DRC·마이크 AGC는 Swift LADSPA 플러그인이 처리합니다.
 
 ```
 [7.1ch Audio Stream]
@@ -190,15 +205,38 @@ INZONE H9 II USB 동글(VID `054c`, PID `0fa8`)은 2개의 독립된 재생 PCM 
   - 서라운드 모드: `alc.cfg` 기준 `+1.0 dB` 정규화 게인.
   - 다운믹스 모드: `alc_for_downmix.cfg` 기준 `0.0 dB` 게인.
   - 엔벨로프 추종: Attack = `0x67d2ec9b / 2^31`, Release = `0x7ac6b85a / 2^31`.
-  - 수학적 로그 근사 및 하드웨어 게인 클램프 로직 완전 일치(`native/spatial_alc.c`).
+  - 수학적 로그 근사 및 게인 제한 로직은 `Sources/InzoneDSP/SpatialALC.swift`에 구현하며, 이전 C 구현의 합성 입력 기준 결과와 비교합니다.
 
 ### 5.2. 10밴드 하드웨어 EQ 및 ModeEqualizer
-- **사전 계산 테이블 구조**: 일반적인 고정 Q 공식 대신, 소니가 튜닝한 10개 중심 주파수(31.5, 63, 125, 250, 500, 1000, 2000, 4000, 8000, 16000 Hz)별 -12 dB ~ +12 dB(1 dB 간격, 25행)의 사전 계산된 Biquad 계수 테이블을 그대로 추출하여 사용합니다(`tools/export_eq_tables.py`).
+- **사전 계산 테이블 구조**: 일반적인 고정 Q 공식 대신, 소니가 튜닝한 10개 중심 주파수(31.5, 63, 125, 250, 500, 1000, 2000, 4000, 8000, 16000 Hz)별 -12 dB ~ +12 dB(1 dB 간격, 25행)의 사전 계산된 Biquad 계수 테이블을 그대로 추출하여 사용합니다(`inzone-tools export-eq`).
 - **ModeEqualizer 우선순위**: `Control.yaml`의 `mode_equalizer.coeffs`가 활성화될 때, 네이티브 함수 `Equalizer::SetParameters` (RVA `0x19ae0`)는 단순 파라미터 재계산값보다 YAML 계수 데이터를 최우선 적용합니다.
 - **수치 정밀도(ULP) 문제**:
   - $\text{Amp1} = 10^{-18/20} \approx 0.1258925497531891$
   - $\text{Amp2} = 10^{+18/20} \approx 7.943282127380371$
   - `double`로 계산 후 `float`로 캐스팅할 경우 단정밀도 부동소수점 최하위 비트(1 ULP) 오차가 발생하므로, 소니 원본의 `powf(10.0f, -18.0f / 20.0f)` 수치 값을 정확히 보존합니다.
+
+---
+
+### 5.3. Swift DSP 및 LADSPA ABI
+
+| 구현 파일 | 역할 |
+|---|---|
+| `Sources/InzoneDSP/Plugin.swift` | LADSPA 디스크립터와 C 호출 규약의 콜백, 포트·상태 관리, 모델·사용자 EQ Biquad |
+| `Sources/InzoneDSP/Dynamics.swift` | 출력 ALC, Peak DRC, 마이크 AGC의 파라미터와 신호 처리 |
+| `Sources/InzoneDSP/SpatialALC.swift` | 8프레임 공간 ALC 처리와 룩어헤드 상태 |
+| `Sources/InzoneDSP/RealtimeMath.swift` | 기존 시스템 수학 함수의 C ABI 호출 경계 |
+| `Sources/CLADSPA/include/header.h` | LADSPA·메모리 할당 함수 헤더와 `libm` 함수 별칭 선언 |
+| `native/Makefile`, `native/exports.map` | Embedded Swift 공유 라이브러리 빌드와 공개 심볼 제한 |
+
+`make native-build`는 `swiftc -enable-experimental-feature Embedded`와 기본 최적화 `-O -whole-module-optimization`을 사용합니다. Embedded Swift는 실험 기능이며, 현재 검증한 도구체인은 Swift 6.3.3입니다. DSP에는 전체 Swift 표준 라이브러리 또는 Swift 공유 런타임이 필요하지 않습니다. LADSPA와 Linux 시스템 함수의 C ABI는 유지합니다.
+
+오디오 콜백과 Swift 내부 처리 경로에는 `@_noLocks`를 적용하여 컴파일러가 해당 호출 경로를 검사합니다. `libm` 별칭 선언의 `swift_attr("@_noLocks")`는 외부 함수가 이 조건을 충족한다는 명시적 가정입니다. 이 선언은 Swift 컴파일러가 시스템 `libm` 구현 자체의 잠금 사용이나 실행 시간을 증명했다는 뜻이 아닙니다.
+
+ELF 버전 스크립트는 외부 공개 심볼을 `ladspa_descriptor`로 제한합니다. `-z now`는 외부 심볼을 로드 시점에 해결하며, `DT_FINI`에 등록한 `inzone_dsp_finalize`는 라이브러리 해제 시 디스크립터 메모리를 정리합니다. 이러한 빌드 설정과 수치 비교는 실제 오디오 세션의 장시간 지연·안정성 측정을 대신하지 않습니다.
+
+Swift 6.3.3으로 검증한 Embedded 플러그인의 ELF 동적 의존성은 `libm`과 `libc`이며, Swift 공유 라이브러리는 포함하지 않습니다. 반복 로드·해제와 메모리 회수의 실제 측정 결과는 [검증 감사 문서](completion-audit.md)에 기록합니다.
+
+이전 C 구현과 Swift 구현의 정상 유한값 87개 합성 시나리오, 출력 4,489,216개 샘플 비교에서 부동소수점 비트 패턴 일치를 확인했습니다. 비유한 재귀 상태를 만들던 2개 시나리오는 Swift 구현이 상태를 초기화하고 0을 반환하므로 의도적으로 달라집니다. `Tests/InzoneCoreTests/Fixtures/dsp-golden.json`은 C 기준 바이너리·소스 해시, 빌드 옵션, 디스크립터 및 출력 해시를 기록합니다. `DSPGoldenTests.swift`는 제어 변경, 재활성화, In-place 처리와 블록 분할에 대한 회귀 검사를 수행합니다. 이 결과는 Sony 원본 Windows 엔진과의 전 입력 공간 동등성을 입증하지 않습니다.
 
 ---
 
@@ -213,7 +251,7 @@ PipeWire 1.6.8의 `audioconvert` 모듈 소스 코드 분석 결과:
 // 그래프 인덱스 N을 기준으로 내림차순(역순)으로 정렬하여 실행
 ```
 - **문제**: `audioconvert.filter-graph.1`, `.2`, `.3` 순으로 등록하면 실제 오디오 처리는 `.3` → `.2` → `.1` 순으로 실행되어 EQ와 DRC 순서가 뒤집히는 문제가 발생했습니다.
-- **해결책**: WirePlumber 설정 빌더(`src/build_graph.py`)에서 의도한 신호 처리 순서의 역순으로 그래프 인덱스를 정렬 배치하여 실제 파이프라인이 정방향(`Amp1` → `ModeEQ` → `EQ` → `ALC` → `Amp2` → `DRC`)으로 처리되도록 보정했습니다.
+- **해결책**: WirePlumber 설정 빌더(`Sources/InzoneCore/GraphRenderer.swift`)에서 의도한 신호 처리 순서의 역순으로 그래프 인덱스를 정렬 배치하여 실제 파이프라인이 정방향(`Amp1` → `ModeEQ` → `EQ` → `ALC` → `Amp2` → `DRC`)으로 처리되도록 보정합니다.
 
 ### 6.2. 4096바이트 문자열 버퍼 한계
 - **문제**: PipeWire의 `parse_prop_params()` 함수는 인라인 노드 속성 문자열을 파싱할 때 4096바이트 고정 버퍼를 사용합니다. 10단 Biquad 계수와 DRC, ALC 설정이 하나의 거대한 JSON 문자열로 전달되면 버퍼 오버플로로 인해 파싱이 실패했습니다.
@@ -300,7 +338,7 @@ H9 II 헤드셋의 ANC, 주변 소리 크기, 배터리 잔량 조회 등은 USB
 
 `SoundQualitySettingsViewModel.EQPresetItem`에서 Flat, FPS1/2/3, Immersion Flat(RPG/Adventure), Bass Boost, Music/Video의 10밴드 값을 추출했습니다. `EQAxis`는 Standard/Immersive 두 종류이며 별도 연속 보간 모드가 아닙니다.
 
-`Control.yaml`의 `mode_equalizer.coeffs`가 몰입 음장의 실제 계수입니다. UI의 `SetEqEnable`은 coefficients와 parameters 양쪽의 첫 10개 enable을 모두 켜고, 네이티브 `Equalizer::SetParameters`(RVA 0x19ae0)는 coefficients를 우선 선택합니다. 따라서 기본 생성자에 있는 다른 주파수·Q·gain 값이나 YAML의 params에서 다시 계산한 값을 사용하면 UI 동작과 달라집니다. 효과적인 10단 계수와 Sony 프리셋은 `tools/export_presets.py`로 추출하고 `assets/sony-presets.json`에 원본 SHA-256과 함께 저장했습니다.
+`Control.yaml`의 `mode_equalizer.coeffs`가 몰입 음장의 실제 계수입니다. UI의 `SetEqEnable`은 coefficients와 parameters 양쪽의 첫 10개 enable을 모두 켜고, 네이티브 `Equalizer::SetParameters`(RVA 0x19ae0)는 coefficients를 우선 선택합니다. 따라서 기본 생성자에 있는 다른 주파수·Q·gain 값이나 YAML의 params에서 다시 계산한 값을 사용하면 UI 동작과 달라집니다. 효과적인 10단 계수와 Sony 프리셋은 `inzone-tools export-presets`로 추출하고 `assets/sony-presets.json`에 원본 SHA-256과 함께 저장합니다.
 
 PipeWire inline 필터의 신호 순서는 기존 Linux EQ(선택) → Amp1 → ModeEQ → EQ → ALC → Amp2 → DRC입니다. Sony 프리셋은 기존 Linux EQ를 끕니다. Amp1은 원본 `powf(10, float(-18 / 20))`에서 얻은 0.1258925497531891, Amp2는 7.943282127380371을 사용합니다. double로 계산한 뒤 float로 변환하면 Amp1이 1 ULP 달라집니다.
 
@@ -308,10 +346,10 @@ Windows `SoundProfileCollection`은 최대 256개의 `SoundProfile` 배열을 JS
 
 ---
 
-## 10. 결론 및 클린룸 재구현 요약
+## 10. 재구현 및 배포 범위
 
-본 프로젝트의 모든 런타임 구성 요소는 Sony의 라이선스 계약과 리눅스 시스템 보안 가이드라인을 준수하도록 설계되었습니다.
+프로젝트는 역분석한 파일 구조와 동작을 Linux에서 구현하며, 원본 프로그램 실행과 런타임 구현을 구분합니다.
 
 1. **바이너리 비배포 원칙**: Sony의 저작물인 EXE, DLL, HKI, BA 파일은 일체 저장소에 포함되지 않습니다.
-2. **클린룸 재작성 (Clean-room Implementation)**: C 소스 코드(`native/`) 및 Python 모듈(`src/`)은 역분석된 동작 스펙에 기반하여 완전히 새로 작성된 순수 오픈소스 코드입니다.
-3. **루트 권한 최소화**: 오디오 신호 처리는 일반 사용자 세션(PipeWire)에서 동작하며, udev 장치 규칙 등록에만 관리자 권한(`sudo`)이 1회 사용됩니다.
+2. **구현 언어**: 제어·설정·TUI·자산 추출·진단·실시간 LADSPA DSP는 Swift(`Sources/`), 테스트는 Swift(`Tests/`)로 구현합니다. `Sources/CLADSPA/`의 C 헤더는 LADSPA와 시스템 함수의 ABI 선언을 제공합니다.
+3. **사용자 세션**: 오디오 처리는 일반 사용자 PipeWire 세션에서 실행합니다. 시스템 udev 규칙 설치에는 관리자 권한이 필요합니다.

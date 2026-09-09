@@ -1,0 +1,4 @@
+module CLADSPA [system] {
+    header "include/header.h"
+    export *
+}

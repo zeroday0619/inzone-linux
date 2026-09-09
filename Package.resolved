@@ -1,0 +1,42 @@
+{
+  "originHash" : "4f1e6cd03fd6afc2113fe97ca4cdc8b352b9ebe7558163b2f6e8e03f197dc2d6",
+  "pins" : [
+    {
+      "identity" : "swift-numerics",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-numerics",
+      "state" : {
+        "revision" : "0c0290ff6b24942dadb83a929ffaaa1481df04a2",
+        "version" : "1.1.1"
+      }
+    },
+    {
+      "identity" : "swift-system",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-system",
+      "state" : {
+        "revision" : "b5544ba79a70a0cb3563e75bf26dc198d6b40ed3",
+        "version" : "1.7.4"
+      }
+    },
+    {
+      "identity" : "swift-termios",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/minacle/swift-termios",
+      "state" : {
+        "revision" : "ea47a4863d918fb6acfc9ab285344a8185045d80",
+        "version" : "1.0.0"
+      }
+    },
+    {
+      "identity" : "swift-tui",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/minacle/swift-tui",
+      "state" : {
+        "revision" : "0561e53263a82724f97f9c3fe860217268e0b5ce",
+        "version" : "0.12.0"
+      }
+    }
+  ],
+  "version" : 3
+}

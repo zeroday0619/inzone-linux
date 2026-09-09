@@ -1,27 +1,28 @@
 {
-  "baseline": "same Linux LADSPA graph outside PipeWire",
-  "pipewire": "real audioconvert.filter-graph.N in isolated stream",
-  "cases": [
+  "baseline" : "same Linux LADSPA graph outside PipeWire",
+  "cases" : [
     {
-      "case": "fps1-drc0",
-      "samples": 720000,
-      "max_absolute_error": 0.0,
-      "rms_error": 0.0,
-      "transport_offset_frames": 512
+      "case" : "fps1-drc0",
+      "max_absolute_error" : 0,
+      "rms_error" : 0,
+      "samples" : 720000,
+      "transport_offset_frames" : 2304
     },
     {
-      "case": "music_video-drc0",
-      "samples": 720000,
-      "max_absolute_error": 0.0,
-      "rms_error": 0.0,
-      "transport_offset_frames": 512
+      "case" : "music_video-drc0",
+      "max_absolute_error" : 0,
+      "rms_error" : 0,
+      "samples" : 720000,
+      "transport_offset_frames" : 2304
     },
     {
-      "case": "custom-immersive-alcTrue-drc2",
-      "samples": 720000,
-      "max_absolute_error": 0.0,
-      "rms_error": 0.0,
-      "transport_offset_frames": 512
+      "case" : "custom-immersive-alcTrue-drc2",
+      "max_absolute_error" : 0,
+      "rms_error" : 0,
+      "samples" : 720000,
+      "transport_offset_frames" : 2304
     }
-  ]
+  ],
+  "pipewire" : "real audioconvert.filter-graph.N in isolated stream",
+  "plugin_sha256" : "e93cf211a0d60b283a1a9396e3f523276494f9f92775cc0abf0f0d6f3a0b8cd0"
 }
