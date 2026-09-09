@@ -31,10 +31,12 @@ struct TerminalTests {
         let model = TerminalModel()
         let screens: [(TerminalScreen, [String])] = [
             (.profiles, ["Apply", "Quit", "I: Import", "↑↓ Select", "Q / Esc"]),
+            (.profileManager, ["C: Create", "O: Duplicate", "I: Import", "W: Replace", "X: Export", "Back"]),
             (.equalizer, ["16k", "−", "+", "Save & Apply", "Cancel"]),
             (.presets, ["Apply preset", "Cancel"]),
             (.device, ["Apply", "R: Refresh", "T: Test microphone", "Back"]),
             (.automation, ["A: Add/Edit", "D: Delete", "Start automation", "Back"]),
+            (.automationProfilePicker, ["Application:", "Select", "Cancel"]),
             (.prompt, ["Continue", "Cancel"]),
         ]
         for (screen, labels) in screens {
@@ -50,10 +52,12 @@ struct TerminalTests {
         let model = TerminalModel()
         let screens: [(TerminalScreen, [String])] = [
             (.profiles, ["Restore Defaults", "Controls", "Apply", "Quit"]),
+            (.profileManager, ["Previous", "Next", "Create", "Import", "Replace", "Export", "Retry", "Back"]),
             (.equalizer, ["− 1 dB", "+ 1 dB", "‹", "›", "Save & Apply", "Reset all", "Cancel"]),
             (.presets, ["Previous", "Next", "Apply preset", "Cancel"]),
             (.device, ["Noise", "Sound", "Mic", "System", "Info", "Discard", "Apply", "Refresh", "Back"]),
             (.automation, ["No automation rules", "Add rule", "Start", "Back"]),
+            (.automationProfilePicker, ["Application:", "Previous page", "Next page", "Select", "Cancel"]),
             (.prompt, ["Continue", "Cancel"]),
         ]
         for (screen, labels) in screens {
@@ -72,10 +76,12 @@ struct TerminalTests {
                 model.message = "Ready for the next action."
                 let screens: [(TerminalScreen, String)] = [
                     (.profiles, "INZONE H9 II / Profiles"),
+                    (.profileManager, "Sound Profile Collection"),
                     (.equalizer, "10-band EQ / \(model.title)"),
                     (.presets, "Sony EQ Presets / \(model.title)"),
                     (.device, "INZONE H9 II / Device Settings"),
                     (.automation, "Auto Profiles / Stopped"),
+                    (.automationProfilePicker, "Choose Automation Profile"),
                     (.prompt, "INZONE H9 II / Input"),
                 ]
                 for (screen, title) in screens {
@@ -109,7 +115,7 @@ struct TerminalTests {
             let model = TerminalModel()
             model.busy = true
             model.message = "Applying device settings..."
-            for screen in [TerminalScreen.profiles, .equalizer, .presets, .device, .automation, .prompt] {
+            for screen in [TerminalScreen.profiles, .profileManager, .equalizer, .presets, .device, .automation, .automationProfilePicker, .prompt] {
                 model.screen = screen
                 let rendered = ViewRenderer.render(
                     TerminalRoot(model: model, touchOptimized: touchOptimized).frame(width: 72, height: 24),
@@ -163,7 +169,7 @@ struct TerminalTests {
         var terminated = false
         model.showsSystemControls = true
         let systemControls = touchScreen(model)
-        for label in ["Device", "Automation", "Import", "Back"] {
+        for label in ["Device", "Automation", "Personal HRTF import", "Manage sound profiles", "Back"] {
             #expect(systemControls.contains(label))
         }
         _ = model.handle(KeyPress(key: .escape, characters: ""), terminate: { terminated = true })
@@ -320,18 +326,29 @@ struct TerminalTests {
         press(model, "A")
         model.promptText = "game.exe"
         model.submitPrompt()
-        model.promptText = "restore"
-        model.submitPrompt()
-        #expect(model.screen == .prompt)
-        #expect(model.message.contains("target"))
-        model.promptText = "fps"
-        model.submitPrompt()
+        #expect(model.screen == .automationProfilePicker)
+        _ = model.handle(KeyPress(key: .return, characters: ""), terminate: {})
+        #expect(model.automationTargetIdentifier == "fps")
         model.promptText = "1001"
         model.submitPrompt()
         #expect(model.screen == .prompt)
         model.promptText = ""
         model.submitPrompt()
         #expect(model.screen == .automation)
+    }
+
+    @Test func automationRuleDeletionRequiresExplicitConfirmation() {
+        let model = TerminalModel()
+        model.screen = .automation
+        model.setPreviewAutomationRule(app: "game.exe", profile: "FPS", priority: 10)
+        press(model, "d")
+        #expect(model.screen == .prompt)
+        #expect(model.promptActionTitle == "Confirm")
+        #expect(model.promptTitle.contains("game.exe"))
+        model.promptText = "wrong"
+        model.submitPrompt()
+        #expect(model.screen == .prompt)
+        #expect(model.message.contains("DELETE"))
     }
 
     @Test func terminationDoesNotInterruptAnActiveMutation() {
@@ -386,10 +403,12 @@ struct TerminalTests {
     @Test func wideWorkspacePreservesNavigationAndActionsOnEveryScreen() {
         let screens: [(TerminalScreen, [String])] = [
             (.profiles, ["Profiles", "Restore Defaults", "Controls", "Apply", "Quit"]),
+            (.profileManager, ["Sound Profile Collection", "Previous", "Next", "Create", "Import", "Replace", "Retry", "Back"]),
             (.equalizer, ["− 1 dB", "+ 1 dB", "Save & Apply", "Reset all", "Cancel"]),
             (.presets, ["Previous", "Next", "Apply preset", "Cancel"]),
             (.device, ["Device", "Noise", "Sound", "Mic", "System", "Info", "Discard", "Apply", "Refresh", "Back"]),
             (.automation, ["Automation", "No automation rules", "Add rule", "Start", "Back"]),
+            (.automationProfilePicker, ["Choose Automation Profile", "Application:", "Previous page", "Next page", "Select", "Cancel"]),
             (.prompt, ["Continue", "Cancel"]),
         ]
         for (columns, rows) in [(110, 24), (120, 36)] {
@@ -437,7 +456,7 @@ struct TerminalTests {
 
     @Test func interfaceUsesStylingWithoutDecorativeTextMarkers() {
         for touchOptimized in [false, true] {
-            for screen in [TerminalScreen.profiles, .equalizer, .presets, .device, .automation, .prompt] {
+            for screen in [TerminalScreen.profiles, .profileManager, .equalizer, .presets, .device, .automation, .automationProfilePicker, .prompt] {
                 let model = TerminalModel()
                 model.screen = screen
                 let rendered = ViewRenderer.render(

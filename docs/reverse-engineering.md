@@ -28,6 +28,13 @@ The InstallShield executable embeds an MSI database at file offset `7,212,312`, 
 - In the managed assembly, `ApoFileCommunication.SetVirtualizer` binds `standard_hrtf.hki` and `wh_g910n_standard.ba` together when non-personalized spatial surround is enabled.
 - When spatial surround is disabled, `downmix.hki` is loaded and the model BA correction filter is bypassed.
 
+The extraction workflow does not execute the Windows installer, PE payloads, or
+firmware tools. It runs pinned 7-Zip and ILSpy tooling against copied input in a
+private staging directory. `inzone-tools export-inventory` records the selected
+managed types and feature payloads with their size and SHA-256. Firmware-related
+artifacts are included only in a `catalog-only-do-not-execute` inventory and are
+never exported as runtime assets.
+
 ---
 
 ## 2. Native Audio Engine Analysis (`inzonevirtualizer.dll`)
@@ -50,6 +57,23 @@ The InstallShield executable embeds an MSI database at file offset `7,212,312`, 
 | **Model BA Biquad Kernel** | `0x11210` | 7-stage cascaded IIR Biquad (internal `double` precision state) |
 | **User 10-Band EQ Kernel** | `0x155c0` | 10-band parametric Biquad EQ (`float32` state) |
 | **Equalizer::SetParameters** | `0x19ae0` | Precalculated `coefficients` take precedence over dynamic parameter recalculations |
+
+The recovered spatial path performs direct convolution. The Linux implementation
+therefore uses three direct FIR LADSPA descriptors rather than PipeWire's built-in
+convolver: `inzone_fir_standard` (descriptor 6), `inzone_fir_personal`
+(descriptor 7), and `inzone_fir_downmix` (descriptor 8). Each has eight ordered
+speaker inputs, two ear outputs, and a zero-valued FIR latency port. The 32-frame
+graph latency comes from the following spatial ALC stage.
+
+The plugin resolves one data root before loading a complete coefficient bank:
+`INZONE_DSP_DATA_DIR` when explicitly set for a controlled test, otherwise
+`$HOME/.local/share/inzone-linux`. Graph generation rejects an asset directory
+that does not match its configured FIR data root, so validation and runtime load
+cannot silently refer to different banks.
+
+The `preamp` fields in the managed `control.yaml` path are parsed and written by
+the Hub, but the analyzed native DSP path does not consume them. Preserving that
+native behavior requires no separate preamp stage.
 
 ### 2.2. Encryption Key Derivation Algorithm
 Sony symmetric encryption keys are not stored in plaintext; they are derived at runtime using file header metadata combined with internal obfuscation tables:
@@ -76,11 +100,18 @@ A binary container housing Head-Related Transfer Function (HRTF) FIR filter tap 
   - `0x4C`: Cipher mode (`5`: Standard asset, `7`: Personalized profile)
   - `0x50`: Cipher 7 PRNG initial seed offset
   - `0x58`: Tap count (`512`)
-  - `0x5C`: Direction count (`14`)
+  - `0x5C`: Declared direction count (`14` in the pinned standard and downmix H9 II assets)
   - `0x90`: Start of AES-128-CBC encrypted payload
 - **Payload Structure**:
-  - Total plaintext size: 57,792 bytes (14 directions × 2 ears × (16-byte metadata + 512 taps × 4-byte float32)).
+  - The pinned stock plaintext size is 57,792 bytes (14 directions × 2 ears × (16-byte metadata + 512 taps × 4-byte float32)).
   - Each record contains a 16-byte header (`azimuth`, `polar`, `kind`, `ear`) followed by 512 `float32` FIR coefficients.
+
+The 14 records per ear are source metadata, not 14 runtime speaker ports. The H9
+II renderer selects the eight coordinates in the channel table below. The other
+six directions remain in the manifest for provenance. Standard stock export
+requires exactly 14 unique paired directions. Personalized input may declare a
+different valid paired direction count, but import requires all eight renderer
+coordinates and preserves every decoded unique direction in its manifest.
 
 ### 3.2. BA (Biquad Array Correction Filter)
 A cascaded IIR Biquad filter correcting the acoustic characteristics of the headset drivers:
@@ -93,7 +124,7 @@ A cascaded IIR Biquad filter correcting the acoustic characteristics of the head
   - `0x1C`: Number of Biquad sections (`7`)
 - **Payload**: Decrypted plaintext size is exactly 140 bytes (7 stages × 5 coefficients `b0, b1, b2, a1, a2`).
 - **Stability Verification**:
-  Transfer function $H(z) = \frac{b_0 + b_1 z^{-1} + b_2 z^{-2}}{1 + a_1 z^{-1} + a_2 z^{-2}}$ was analyzed mathematically. All poles reside strictly within the complex unit circle ($|z| < 1$), proving unconditional filter stability.
+  Transfer function $H(z) = \frac{b_0 + b_1 z^{-1} + b_2 z^{-2}}{1 + a_1 z^{-1} + a_2 z^{-2}}$ was analyzed mathematically. All poles for the pinned coefficient set reside strictly within the complex unit circle ($|z| < 1$). Import rejects non-finite, out-of-range, or unstable coefficients separately.
 
 ---
 
@@ -119,6 +150,27 @@ The INZONE H9 II transceiver provides two playback PCM streams over a single USB
 
 Default Linux sound configurations often erroneously bind primary desktop audio to PCM 0. This project installs a dedicated WirePlumber configuration rule (`52-inzone-game-chat.conf`) to ensure spatial audio routing binds strictly to the Game stream (PCM 1).
 
+### 4.3. Layout-specific Virtual Sinks
+
+| Input layout | Surround HRTF sink | Surround-off downmix sink |
+|---|---|---|
+| `FL FR` | `inzone.sony-surround.stereo` | `inzone.sony-downmix` |
+| `FL FR FC LFE SL SR` | `inzone.sony-surround.5.1` | `inzone.sony-downmix.5.1` |
+| `FL FR FC LFE RL RR SL SR` | `inzone.sony-surround` | `inzone.sony-downmix.7.1` |
+
+All six sinks render stereo to the physical Game endpoint. Surround profiles make
+the 7.1 surround sink the default. Ordinary non-voice profiles make the stereo
+downmix sink the default. Voice targets the physical Chat endpoint, and Restore
+targets the physical Game endpoint. Missing FIR ports in the 2.0 and 5.1 graphs
+are processed as exact zero instead of being synthesized by automatic upmix.
+
+The recovered `downmix.hki` bank is a delta matrix. `FL` and `FR` feed their own
+ears at unity. `FC` feeds both ears at approximately −3.01 dB. `SL` and `RL` feed
+the left ear at approximately −3.01 dB, while `SR` and `RR` feed the right ear at
+the same level. `LFE` is discarded. All taps after the first are zero. The FIR
+therefore reports zero latency; the following spatial ALC contributes the graph's
+declared 32-frame latency.
+
 ---
 
 ## 5. DSP Signal Processing Pipeline Architecture
@@ -127,11 +179,11 @@ Real-time processing is handled through PipeWire `filter-chain` and a high-perfo
 
 ```mermaid
 flowchart TD
-    In71["7.1ch Surround Input Stream"] --> Stage1
+    In71["2.0 / 5.1 / 7.1 input stream"] --> Stage1
     
     subgraph PipeWire ["PipeWire Virtual Surround Node"]
-        Stage1["1. Sony Spatial Convolution (FIR 512-tap)<br>8-channel binaural 3D soundfield synthesis"]
-        Stage2["2. Model BA Equalization (7-stage IIR Biquad)<br>H9 II hardware acoustic correction (native double precision)"]
+        Stage1["1. Direct Sony FIR (512 taps)<br>standard / personal / downmix descriptor"]
+        Stage2["2. Surround only: Model BA Equalization<br>7 stages per ear, native double state"]
         Stage3["3. Internal Spatial ALC (Lookahead Limiter)<br>32-sample lookahead buffer, clipping prevention & +1.0 dB boost"]
         
         subgraph InlineDSP ["Optional Inline DSP Stages"]
@@ -150,11 +202,17 @@ flowchart TD
     InlineDSP --> Out["Headset ALSA Hardware Endpoint<br>Game PCM 1 (16-bit 48kHz Stereo)"]
 ```
 
+For surround, the graph is direct HRTF FIR → seven model biquads per ear →
+spatial ALC → DRC. For surround-off Game profiles, it is direct `downmix.hki`
+FIR → spatial ALC. The downmix graph deliberately omits the model BA and its
+internal DRC. Optional profile EQ, sound mode, output ALC, and DRC remain separate
+inline graphs attached to the target output rule.
+
 ### 5.1. Numerical Precision (ULP) Preservation
 Sony original engine evaluates $-18\text{ dB}$ attenuation and $+18\text{ dB}$ recovery using single-precision floating-point constants `powf(10.0f, ±18.0f / 20.0f)`:
 - `Amp1`: `0.1258925497531891`
 - `Amp2`: `7.943282127380371`
-Evaluating these via double-precision and casting to float introduces a 1-ULP deviation in the least significant mantissa bit. The native driver preserves Sony exact single-precision constants bit-for-bit to guarantee zero numerical drift.
+Evaluating these via double-precision and casting to float introduces a 1-ULP deviation in the least significant mantissa bit. The Linux implementation stores the recovered single-precision constants directly. This establishes those two constants only; it does not establish bit identity for the complete Windows DSP engine.
 
 ---
 
@@ -213,19 +271,60 @@ A mismatching readback waits up to 50 ms before the next query. The SET command
 is not retransmitted. Verification succeeds only when the requested field matches;
 otherwise the error includes the field, requested value, and last observed value.
 This handles temporary stale readback without hiding persistent device rejection.
+The H9 II accepts `ambient_level` and `voice_focus` changes while Event 65 is in
+Ambient mode; callers changing those values must select `anc=2` first.
 
 | Field | Event ID | Index | Valid Values | Description |
 |---|---|---|---|---|
+| `headphone_volume` | 33 | 1 | 0 to 30 | Headset hardware playback level |
 | `anc` | 65 | 0 | 0, 1, 2 | 0: Off, 1: Noise Canceling (NC), 2: Ambient Sound |
 | `ambient_level` | 65 | 1 | 1 to 20 | Ambient Sound microphone volume level |
 | `voice_focus` | 65 | 3 | 0, 1 | 0: Voice Focus Off, 1: Voice Focus On |
-| `game_chat` | 34 | 0 | 0 to 100 | Game / Chat balance ratio (50: Center) |
+| `game_chat` | 34 | 0 | 0 to 100 in steps of 10 | Game / Chat balance ratio (50: Center) |
 | `sidetone` | 35 | 0 | 0 to 10 | Real-time microphone monitoring volume (0 to 10) |
 | `toggle_*` | 66 | 0–2 | 0, 1 | Headset physical button cycle mode mask |
 | `nc_startup` | 67 | 0 | 0 to 3 | Power-on NC default (0: Off, 1: NC, 2: Ambient, 3: Last State) |
+| `bt_startup` | 99 | 0 | 0 to 2 | Power-on Bluetooth default |
 | `auto_power` | 129 | 0 | 0, 5, 15, 30, 60, 180 | Standby auto-power-off timer (minutes, 0: Disabled) |
+| `language` | 131 | 0 | 0 to 2 | Voice guidance language |
+| `guidance` | 132 | 0 | 0, 1 | Operation tones and voice guidance |
 | `battery` | 4 | - | 0 to 100 | Battery level & charging state (Read-only) |
 | `firmware` | 3 | - | String | Headset and transceiver firmware versions (Read-only) |
+
+Event 33 byte 0 reports headphone mute, but the H9 II Hub path changes only its
+volume byte. Event 36 reports the boom-microphone mute and level state. Hub
+1.0.19.0 marks the shared event as SET-capable, but sets
+`MicMuteButtonVisible` only for the INZONE Buds model. H9 II therefore treats
+both mute values as status-only.
+
+The managed `EVENT_ID` enum is shared by several headset models. Its Event 98
+(Bluetooth sound quality) and Event 130 (LED setting) entries are hidden by the
+Hub's H9 II (`GH_H2`) capability and visibility path, so the Linux H9 II interface
+does not expose them as supported controls. An event's presence in the generic
+enum alone is not evidence that it is an H9 II Hub feature.
+
+The reader keeps command responses separate from unsolicited `NTFY_ACTIVE`
+(`0xA0`) status. It bounds report, response, notification, and multipart state;
+expires incomplete multipart notifications; and resets malformed framing so later
+traffic remains readable. Notifications carry a monotonic revision. Snapshot
+watermarks prevent an older notification observed during a GET sequence from
+overwriting the completed snapshot.
+
+Event 33 is decoded as headphone mute, hardware volume, and reported percentage.
+Event 36 is decoded as headset microphone mute, volume, and percentage. Event 97
+reports Bluetooth power and connection state, while Event 143 reports microphone
+attachment. Host Game/Chat output volume and host microphone state are separate
+PipeWire/PulseAudio controls and are not presented as HCI device registers.
+
+### 7.2. Firmware Safety Boundary
+
+Firmware support consists only of a GET transaction for Event 3 and local
+formatting of the two installed version values. Event 3 has no SET path. The
+implementation does not query Sony's latest-version service, compare versions,
+download firmware, invoke an updater, or flash the device. Event 160 is rejected
+when constructing or parsing supported commands and is ignored if it appears on
+the asynchronous reader. Updater-related files found during static extraction are
+cataloged for audit only and rejected by installation policy.
 
 ---
 
@@ -240,4 +339,14 @@ Personalized profiles (`personalized_hrtf.hki`) generated by the mobile app appl
      $$\text{seed}_{n+1} = (\text{seed}_n \times 0x80849 + 0x2a3b5) \pmod{2^{32}}$$
    - **Word Mask**: `mask = seed + (seed >> 24)`
 3. The sum of all plaintext bytes modulo 256 is checked against the header checksum.
-4. A 1024-point complex FFT is computed across 14 directions for both ears, normalizing maximum magnitude to <= 18.0 before pipeline ingestion.
+4. Native-compatible normalization uses 512-sample partitions and a 1024-point
+   double-precision FFT wrapper whose packed spectrum is rounded to Float32. For
+   the current 512-tap assets, one partition is evaluated for every declared
+   paired direction and ear. A single Float32 gain scales the raw taps only when
+   the global spectral peak exceeds `18.0f`; no window or taper is applied.
+
+Normalization covers every decoded source direction. Runtime convolution still
+uses only the eight H9 II renderer coordinates. Exact general FFT operation-order
+identity with the optimized Windows routine remains `Verification required`;
+analytic and threshold-edge fixtures cover cases that do not depend on butterfly
+reassociation.

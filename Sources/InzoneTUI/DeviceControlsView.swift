@@ -6,7 +6,7 @@ enum TerminalDeviceSection: String, CaseIterable {
     static func section(for key: String) -> Self {
         switch key {
         case "anc", "ambient_level", "voice_focus": .noise
-        case "game_chat", "game_volume", "chat_volume": .sound
+        case "game_chat", "game_volume", "chat_volume", "headphone_volume": .sound
         case "sidetone", "mic_volume", "mic_mute": .microphone
         default: .system
         }

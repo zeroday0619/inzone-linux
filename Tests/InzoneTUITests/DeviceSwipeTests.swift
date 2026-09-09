@@ -23,7 +23,7 @@ struct DeviceSwipeTests {
             in: RenderProposal(columns: 72, rows: 24)))
         let row = try #require(block.lines.firstIndex { line in
             line.contains(title) && (rowLabel == nil || line.contains(rowLabel!))
-        })
+        }, "Missing \(title) on row containing \(rowLabel ?? "any text"): \(block.lines)")
         let line = block.lines[row]
         let range = try #require(line.range(of: title))
         return Point(column: line.distance(from: line.startIndex, to: range.lowerBound), row: row)
@@ -79,7 +79,7 @@ struct DeviceSwipeTests {
         #expect(model.deviceSection == .sound)
         #expect(model.pendingDeviceCount == 0)
         model.selectDeviceSection(.microphone)
-        let toggle = try location("Off", rowContaining: "Microphone mute", model: model, runtime: runtime)
+        let toggle = try location("Off", rowContaining: "PipeWire microphone mute", model: model, runtime: runtime)
         drag(runtime, from: toggle, columns: -8)
         #expect(model.deviceSection == .system)
         #expect(model.pendingDeviceCount == 0)

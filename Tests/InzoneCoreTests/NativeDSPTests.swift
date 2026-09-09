@@ -26,8 +26,9 @@ final class NativeDSPTests: XCTestCase {
     func testDescriptorLabelsAndUnsupportedRates() throws {
         let library = try NativeDSPTestLibrary()
         defer { withExtendedLifetime(library) {} }
-        let labels = ["inzone_spatial_alc", "inzone_drc", "inzone_alc", "inzone_mic_agc", "inzone_biquad", "inzone_eq_biquad"]
-        let portCounts: [UInt] = [6, 5, 9, 3, 7, 7]
+        let labels = ["inzone_spatial_alc", "inzone_drc", "inzone_alc", "inzone_mic_agc", "inzone_biquad", "inzone_eq_biquad",
+                      "inzone_fir_standard", "inzone_fir_personal", "inzone_fir_downmix"]
+        let portCounts: [UInt] = [6, 5, 9, 3, 7, 7, 11, 11, 11]
         for (index, label) in labels.enumerated() {
             let pointer = try XCTUnwrap(library.descriptor(UInt(index)), "Missing LADSPA descriptor \(index).")
             let descriptor = pointer.pointee
@@ -40,10 +41,12 @@ final class NativeDSPTests: XCTestCase {
                 XCTAssertNil(unsupported, "\(label) accepted unsupported rate \(rate).")
                 if let unsupported { descriptor.cleanup?(unsupported) }
             }
-            let handle = try XCTUnwrap(instantiate(pointer, 48000), "\(label) rejected 48 kHz.")
-            try XCTUnwrap(descriptor.cleanup)(handle)
+            if index < 6 {
+                let handle = try XCTUnwrap(instantiate(pointer, 48000), "\(label) rejected 48 kHz.")
+                try XCTUnwrap(descriptor.cleanup)(handle)
+            }
         }
-        XCTAssertNil(library.descriptor(6))
+        XCTAssertNil(library.descriptor(9))
     }
 
     func testIrregularBlocksInPlaceAndReactivationPreserveExactSamples() throws {

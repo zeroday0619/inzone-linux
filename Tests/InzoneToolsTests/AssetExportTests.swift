@@ -125,6 +125,83 @@ final class AssetExportTests: XCTestCase {
         }
     }
 
+    func testManagedSourceTargetsCoverImplementedNonAccountFeatureAreas() {
+        let names = AssetExport.managedSourceTargets.map(\.typeName)
+        XCTAssertEqual(names, names.sorted())
+        XCTAssertEqual(Set(names).count, names.count)
+        XCTAssertTrue(names.contains(AssetExport.equalizerSourceType))
+        XCTAssertTrue(names.contains(AssetExport.presetSourceType))
+        XCTAssertTrue(names.contains("PCWidget.Communication.AudioDeviceEnumerator"))
+        XCTAssertTrue(names.contains("PCWidget.Communication.HrtfFileExtensions"))
+        XCTAssertTrue(names.contains("PCWidget.ViewModel.HeadsetParam"))
+        XCTAssertTrue(names.contains("PCWidget.ViewModel.HciCommunication"))
+        XCTAssertTrue(names.contains("PCWidget.ViewModel.MODEL_ID"))
+        XCTAssertTrue(names.contains("PCWidget.ViewModel.YamlType"))
+        XCTAssertFalse(names.contains { $0.localizedCaseInsensitiveContains("firmwareupdate") })
+        XCTAssertFalse(names.contains { $0.localizedCaseInsensitiveContains("account") })
+        XCTAssertEqual(Set(AssetExport.managedSourceTargets.map(\.featureArea)), [
+            "audio-processing", "audio-routing", "device-identification", "device-protocol",
+            "device-settings", "device-status", "equalizer", "profile-management",
+            "profile-serialization", "spatial-audio",
+        ])
+    }
+
+    func testReverseEngineeringInventoryIsDeterministicAndCatalogsFirmwareWithoutExecution() throws {
+        try withSources { payload, decompiled, destination in
+            for target in AssetExport.managedSourceTargets {
+                try write("source for \(target.typeName)\n", type: target.typeName, in: decompiled)
+            }
+            for name in AssetExport.featurePayloadNames where name != "inzonehub.dll" {
+                try Data(("feature source " + name).utf8).write(to: payload.appendingPathComponent(name))
+            }
+            try Data("firmware library".utf8).write(to: payload.appendingPathComponent("fwupdate_headset.dll"))
+            try Data("flash image".utf8).write(to: payload.appendingPathComponent("glflash_v1.39.fl"))
+            try Data("update executable".utf8).write(to: payload.appendingPathComponent("glhubupdatetoolcli.exe"))
+            try Data("ordinary library".utf8).write(to: payload.appendingPathComponent("ordinary.dll"))
+            let first = destination.appendingPathComponent("first.json")
+            let second = destination.appendingPathComponent("second.json")
+
+            try AssetExport.reverseEngineeringInventory(
+                payload: payload, decompiled: decompiled, decompilerVersion: "fixture", destination: first
+            )
+            try AssetExport.reverseEngineeringInventory(
+                payload: payload, decompiled: decompiled, decompilerVersion: "fixture", destination: second
+            )
+
+            XCTAssertEqual(try Data(contentsOf: first), try Data(contentsOf: second))
+            let value = try XCTUnwrap(JSONSupport.decode(Data(contentsOf: first)) as? [String: Any])
+            XCTAssertEqual(value["schema_version"] as? Int, 1)
+            XCTAssertEqual(value["scope"] as? String, "implemented-non-account-features")
+            XCTAssertEqual(value["firmware_policy"] as? String, "version-query-and-static-catalog-only")
+            let managed = try XCTUnwrap(value["managed_sources"] as? [[String: Any]])
+            XCTAssertEqual(managed.count, AssetExport.managedSourceTargets.count)
+            XCTAssertEqual(managed.first?["type"] as? String, AssetExport.managedSourceTargets.first?.typeName)
+            let firmware = try XCTUnwrap(value["firmware_artifacts"] as? [[String: Any]])
+            XCTAssertEqual(firmware.compactMap { $0["file"] as? String }, [
+                "fwupdate_headset.dll", "glflash_v1.39.fl", "glhubupdatetoolcli.exe",
+            ])
+            XCTAssertTrue(firmware.allSatisfy { $0["policy"] as? String == "catalog-only-do-not-execute" })
+            let sources = try XCTUnwrap(value["source_artifacts"] as? [[String: Any]])
+            XCTAssertEqual(sources.compactMap { $0["file"] as? String }, AssetExport.featurePayloadNames)
+        }
+    }
+
+    func testIncompleteInventoryPreservesExistingOutput() throws {
+        try withSources { payload, decompiled, destination in
+            for target in AssetExport.managedSourceTargets.dropLast() {
+                try write("source\n", type: target.typeName, in: decompiled)
+            }
+            let output = destination.appendingPathComponent("inventory.json")
+            let sentinel = Data("reviewed inventory".utf8)
+            try sentinel.write(to: output)
+
+            XCTAssertThrowsError(try AssetExport.reverseEngineeringInventory(
+                payload: payload, decompiled: decompiled, decompilerVersion: "fixture", destination: output
+            ))
+            XCTAssertEqual(try Data(contentsOf: output), sentinel)
+        }
+    }
+
     func testPresetExtractionUsesFinalSwitchCasesAndEffectiveCoefficients() throws {
         try withSources { payload, decompiled, destination in
             try write(presetSource(), type: AssetExport.presetSourceType, in: decompiled)

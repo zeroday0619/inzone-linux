@@ -140,6 +140,33 @@ final class LiveStateTests: XCTestCase {
         }
     }
 
+    func testRegisteredCustomProfileIsResolvedAndRestored() throws {
+        try fixture { paths in
+            let profile = try ProfileController(paths: paths).createProfile(
+                name: "Live Custom", basedOn: "music"
+            )
+            let identifier = profile.identifier
+            let active = Data("# INZONE profile: \(identifier.uppercased())\n{\"custom-preserved-value\":2}\n".utf8)
+            try active.write(to: paths.activeProfile)
+
+            let state = try LiveSessionState(paths: paths, runner: Runner())
+            XCTAssertEqual(state.initialProfile, identifier)
+            XCTAssertThrowsError(try state.withRestoration {
+                try mutate(paths)
+                throw InzoneError.message("Injected custom profile verification failure")
+            })
+            XCTAssertEqual(try Data(contentsOf: paths.activeProfile), active)
+        }
+    }
+
+    func testRestoreProfileRemainsAccepted() throws {
+        try fixture { paths in
+            try Data("# INZONE profile: restore\n{}\n".utf8).write(to: paths.activeProfile)
+            let state = try LiveSessionState(paths: paths, runner: Runner())
+            XCTAssertEqual(state.initialProfile, "restore")
+        }
+    }
+
     func testStateSymlinksAreRejectedWithoutChangingTheirTargets() throws {
         try fixture(optionalFiles: false) { paths in
             let target = paths.home.appendingPathComponent("preserved-target")

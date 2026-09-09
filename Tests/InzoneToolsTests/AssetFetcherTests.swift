@@ -5,6 +5,40 @@ import InzoneCore
 @testable import InzoneToolsCore
 
 final class AssetFetcherTests: XCTestCase, @unchecked Sendable {
+    private static func writeExecutableELF(to path: URL, machine: UInt16 = nativeELFMachine) throws {
+        var bytes = [UInt8](repeating: 0, count: 120)
+        bytes.replaceSubrange(0..<7, with: [0x7F, 0x45, 0x4C, 0x46, 2, 1, 1])
+        func write16(_ value: UInt16, at offset: Int) {
+            bytes[offset] = UInt8(truncatingIfNeeded: value)
+            bytes[offset + 1] = UInt8(truncatingIfNeeded: value >> 8)
+        }
+        func write32(_ value: UInt32, at offset: Int) {
+            for index in 0..<4 { bytes[offset + index] = UInt8(truncatingIfNeeded: value >> (index * 8)) }
+        }
+        func write64(_ value: UInt64, at offset: Int) {
+            for index in 0..<8 { bytes[offset + index] = UInt8(truncatingIfNeeded: value >> (index * 8)) }
+        }
+        write16(2, at: 16)
+        write16(machine, at: 18)
+        write32(1, at: 20)
+        write64(64, at: 32)
+        write16(64, at: 52)
+        write16(56, at: 54)
+        write16(1, at: 56)
+        write32(1, at: 64)
+        write32(5, at: 68)
+        try Data(bytes).write(to: path)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: path.path)
+    }
+
+    #if arch(x86_64)
+    private static let nativeELFMachine: UInt16 = 62
+    private static let foreignELFMachine: UInt16 = 183
+    #elseif arch(arm64)
+    private static let nativeELFMachine: UInt16 = 183
+    private static let foreignELFMachine: UInt16 = 62
+    #endif
+
     func testFetchSuccessMessagesEscapeTerminalControls() {
         let unsafe = "name\u{001B}\u{007F}\u{0085}\u{202E}\u{2028}\u{2029}\nvalue"
         let escaped = "name\\u{001B}\\u{007F}\\u{0085}\\u{202E}\\u{2028}\\u{2029}\\u{000A}value"
@@ -328,6 +362,50 @@ final class AssetFetcherTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(try Data(contentsOf: destination), Data("new".utf8))
     }
 
+    func testGeneratedAssetDirectoryPublishesNestedDownmixAsCompleteGeneration() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let staged = fixture.directory.appendingPathComponent("stage/assets")
+        let downmix = staged.appendingPathComponent("downmix")
+        let destination = fixture.directory.appendingPathComponent("repository/assets")
+        try FileManager.default.createDirectory(at: downmix, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        try Data("new manifest".utf8).write(to: staged.appendingPathComponent("manifest.json"))
+        try Data("new downmix".utf8).write(to: downmix.appendingPathComponent("fir-bank.bin"))
+        try Data("old manifest".utf8).write(to: destination.appendingPathComponent("manifest.json"))
+        try Data("stale generation".utf8).write(to: destination.appendingPathComponent("stale.bin"))
+
+        try AssetFetcher.publishGeneratedDirectory(staged, destination: destination)
+
+        XCTAssertEqual(try Data(contentsOf: destination.appendingPathComponent("manifest.json")),
+                       Data("new manifest".utf8))
+        XCTAssertEqual(try Data(contentsOf: destination.appendingPathComponent("downmix/fir-bank.bin")),
+                       Data("new downmix".utf8))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: destination.appendingPathComponent("stale.bin").path))
+        XCTAssertEqual(try Data(contentsOf: staged.appendingPathComponent("manifest.json")),
+                       Data("old manifest".utf8))
+    }
+
+    func testGeneratedAssetDirectoryRejectsLinksWithoutChangingCurrentGeneration() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let staged = fixture.directory.appendingPathComponent("stage/assets")
+        let destination = fixture.directory.appendingPathComponent("repository/assets")
+        let outside = fixture.directory.appendingPathComponent("outside")
+        try FileManager.default.createDirectory(at: staged, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        try Data("outside".utf8).write(to: outside)
+        try Data("current".utf8).write(to: destination.appendingPathComponent("manifest.json"))
+        try FileManager.default.createSymbolicLink(
+            at: staged.appendingPathComponent("downmix"), withDestinationURL: outside
+        )
+
+        XCTAssertThrowsError(try AssetFetcher.publishGeneratedDirectory(staged, destination: destination))
+        XCTAssertEqual(try Data(contentsOf: destination.appendingPathComponent("manifest.json")),
+                       Data("current".utf8))
+        XCTAssertEqual(try Data(contentsOf: outside), Data("outside".utf8))
+    }
+
     func testAssetPublicationReplacesLeafLinkWithoutChangingItsTarget() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
@@ -365,6 +443,7 @@ final class AssetFetcherTests: XCTestCase, @unchecked Sendable {
         try Data("reviewed report".utf8).write(to: report)
         let archiveTool = fixture.directory.appendingPathComponent("7zz")
         let decompiler = fixture.directory.appendingPathComponent("ilspycmd")
+        try Self.writeExecutableELF(to: decompiler)
         let runner = ScriptedRunner { arguments, timeout in
             if arguments.first == archiveTool.path {
                 XCTAssertEqual(timeout, 120)
@@ -379,8 +458,9 @@ final class AssetFetcherTests: XCTestCase, @unchecked Sendable {
                 }
                 return ""
             }
-            XCTAssertEqual(arguments.first, decompiler.path)
-            XCTAssertEqual(Array(arguments[1...3]), ["--disable-updatecheck", "-t", AssetExport.equalizerSourceType])
+            XCTAssertTrue(arguments[0].hasPrefix("/proc/"))
+            XCTAssertTrue(arguments[0].contains("/fd/"))
+            XCTAssertEqual(Array(arguments[1...3]), ["--disable-updatecheck", "-t", AssetExport.managedSourceTargets[0].typeName])
             XCTAssertEqual(timeout, 180)
             throw CommandError(arguments: arguments, status: 1, output: "simulated decompiler failure")
         }
@@ -402,7 +482,9 @@ final class AssetFetcherTests: XCTestCase, @unchecked Sendable {
         defer { fixture.remove() }
         let tool = fixture.directory.appendingPathComponent("ilspycmd")
         let runner = ScriptedRunner { arguments, timeout in
-            XCTAssertEqual(arguments, [tool.path, "--version"])
+            XCTAssertTrue(arguments[0].hasPrefix("/proc/"))
+            XCTAssertTrue(arguments[0].contains("/fd/"))
+            XCTAssertEqual(Array(arguments.dropFirst()), ["--version"])
             XCTAssertEqual(timeout, 30)
             return "ilspycmd: 11.0.0.93750\n"
         }
@@ -411,11 +493,168 @@ final class AssetFetcherTests: XCTestCase, @unchecked Sendable {
             XCTAssertTrue(error.localizedDescription.contains("Offline mode requires"))
         }
         XCTAssertEqual(runner.count, 0)
-        try Data().write(to: tool)
+        try Self.writeExecutableELF(to: tool)
         XCTAssertThrowsError(try fetcher.prepareDecompiler(tool)) { error in
             XCTAssertTrue(error.localizedDescription.contains("Expected ilspycmd 11.0.0.9375"))
         }
         XCTAssertEqual(runner.count, 1)
+    }
+
+    func testVendorUpdaterBasenamesCannotBeUsedAsExecutableTools() throws {
+        for name in [
+            "blhost.exe", "earbudsfwupdate.dll", "FirmwareUpdateViewModel.exe",
+            "fwupdate_headset.dll", "glhubupdatetoolcli.exe", "update.bat", "updatehub.bat",
+        ] {
+            XCTAssertThrowsError(try AssetFetcher.rejectVendorUpdaterExecutable(URL(fileURLWithPath: "/payload/" + name))) { error in
+                XCTAssertTrue(error.localizedDescription.contains("static-catalog-only"))
+            }
+        }
+        for name in ["7zz", "dotnet", "ilspycmd", "installer.exe"] {
+            XCTAssertNoThrow(try AssetFetcher.rejectVendorUpdaterExecutable(URL(fileURLWithPath: "/tools/" + name)))
+        }
+
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let updater = fixture.directory.appendingPathComponent("fwupdate_headset.dll")
+        try Data().write(to: updater)
+        let fetcher = AssetFetcher(
+            options: .init(repository: fixture.directory, offline: true), runner: ScriptedRunner.unused()
+        )
+        XCTAssertThrowsError(try fetcher.prepareDecompiler(updater)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("static-catalog-only"))
+        }
+    }
+
+    func testRenamedVendorPEIsRejectedBeforeRunnerInvocation() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let tool = fixture.directory.appendingPathComponent("ilspycmd")
+        try Data([0x4D, 0x5A] + Array(repeating: 0, count: 126)).write(to: tool)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: tool.path)
+        let runner = ScriptedRunner.unused()
+        let fetcher = AssetFetcher(
+            options: .init(repository: fixture.directory, offline: true), runner: runner
+        )
+
+        XCTAssertThrowsError(try fetcher.prepareDecompiler(tool)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("PE executables cannot"))
+        }
+        XCTAssertEqual(runner.count, 0)
+    }
+
+    func testForeignArchitectureELFIsRejectedBeforeRunnerInvocation() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let tool = fixture.directory.appendingPathComponent("ilspycmd")
+        try Self.writeExecutableELF(to: tool, machine: Self.foreignELFMachine)
+        let runner = ScriptedRunner.unused()
+        let fetcher = AssetFetcher(
+            options: .init(repository: fixture.directory, offline: true), runner: runner
+        )
+
+        XCTAssertThrowsError(try fetcher.prepareDecompiler(tool)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("ELF64 little-endian"))
+        }
+        XCTAssertEqual(runner.count, 0)
+    }
+
+    func testFirmwareArtifactsAreExcludedFromPublishedPayloadNames() {
+        XCTAssertEqual(AssetFetcher.publishablePayloadNames([
+            "inzonehub.dll", "updatehub.bat", "glhubupdatetoolcli.exe", "control.yaml",
+            "fwupdate_headset.dll", "wf_g700n_param.bin", "glflash_v1.39.fl", "firmware-notes.txt",
+            "custom.fl", "personal_param.bin",
+        ]), ["control.yaml", "custom.fl", "firmware-notes.txt", "inzonehub.dll", "personal_param.bin"])
+    }
+
+    func testManagedPayloadPublicationReconcilesStaleFirmwareAndPreservesUserFilesAcrossReruns() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let source = fixture.directory.appendingPathComponent("source")
+        let destination = fixture.directory.appendingPathComponent("analysis/payload")
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        try Data("first managed value".utf8).write(to: source.appendingPathComponent("control.yaml"))
+        try Data("first assembly".utf8).write(to: source.appendingPathComponent("inzonehub.dll"))
+        try Data("stale updater".utf8).write(to: destination.appendingPathComponent("fwupdate_headset.dll"))
+        try Data("user evidence".utf8).write(to: destination.appendingPathComponent("user-evidence.bin"))
+        try Data("user firmware notes".utf8).write(to: destination.appendingPathComponent("firmware-notes.txt"))
+        try Data("user flash data".utf8).write(to: destination.appendingPathComponent("custom.fl"))
+        try Data("user parameters".utf8).write(to: destination.appendingPathComponent("personal_param.bin"))
+        let sentinel = fixture.directory.appendingPathComponent("sentinel")
+        try Data("outside payload".utf8).write(to: sentinel)
+        try FileManager.default.createSymbolicLink(
+            at: destination.appendingPathComponent("updatehub.bat"), withDestinationURL: sentinel
+        )
+
+        try AssetFetcher.publishManagedPayload(
+            sourceDirectory: source, destinationDirectory: destination,
+            names: ["control.yaml", "fwupdate_headset.dll", "inzonehub.dll"]
+        )
+
+        XCTAssertEqual(try Data(contentsOf: destination.appendingPathComponent("control.yaml")),
+                       Data("first managed value".utf8))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: destination.appendingPathComponent("fwupdate_headset.dll").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: destination.appendingPathComponent("updatehub.bat").path))
+        XCTAssertEqual(try Data(contentsOf: sentinel), Data("outside payload".utf8))
+        XCTAssertEqual(try Data(contentsOf: destination.appendingPathComponent("user-evidence.bin")),
+                       Data("user evidence".utf8))
+        XCTAssertEqual(try Data(contentsOf: destination.appendingPathComponent("firmware-notes.txt")),
+                       Data("user firmware notes".utf8))
+        XCTAssertEqual(try Data(contentsOf: destination.appendingPathComponent("custom.fl")),
+                       Data("user flash data".utf8))
+        XCTAssertEqual(try Data(contentsOf: destination.appendingPathComponent("personal_param.bin")),
+                       Data("user parameters".utf8))
+
+        try Data("second managed value".utf8).write(to: source.appendingPathComponent("control.yaml"))
+        try Data("stale flash image".utf8).write(to: destination.appendingPathComponent("glflash_v1.39.fl"))
+        try AssetFetcher.publishManagedPayload(
+            sourceDirectory: source, destinationDirectory: destination, names: ["control.yaml"]
+        )
+
+        XCTAssertEqual(try Data(contentsOf: destination.appendingPathComponent("control.yaml")),
+                       Data("second managed value".utf8))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: destination.appendingPathComponent("glflash_v1.39.fl").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: destination.appendingPathComponent("inzonehub.dll").path))
+        XCTAssertEqual(try Data(contentsOf: destination.appendingPathComponent("user-evidence.bin")),
+                       Data("user evidence".utf8))
+    }
+
+    func testManagedPayloadPreflightFailurePreservesExistingDirectory() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let source = fixture.directory.appendingPathComponent("source")
+        let destination = fixture.directory.appendingPathComponent("analysis/payload")
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        try Data("current managed value".utf8).write(to: destination.appendingPathComponent("control.yaml"))
+        try Data("stale updater".utf8).write(to: destination.appendingPathComponent("fwupdate_headset.dll"))
+
+        XCTAssertThrowsError(try AssetFetcher.publishManagedPayload(
+            sourceDirectory: source, destinationDirectory: destination, names: ["control.yaml"]
+        ))
+
+        XCTAssertEqual(try Data(contentsOf: destination.appendingPathComponent("control.yaml")),
+                       Data("current managed value".utf8))
+        XCTAssertEqual(try Data(contentsOf: destination.appendingPathComponent("fwupdate_headset.dll")),
+                       Data("stale updater".utf8))
+    }
+
+    func testManagedPayloadPublicationRejectsLinkedDestinationDirectory() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let source = fixture.directory.appendingPathComponent("source")
+        let outside = fixture.directory.appendingPathComponent("outside")
+        let destination = fixture.directory.appendingPathComponent("analysis/payload")
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: destination, withDestinationURL: outside)
+        try Data("managed value".utf8).write(to: source.appendingPathComponent("control.yaml"))
+
+        XCTAssertThrowsError(try AssetFetcher.publishManagedPayload(
+            sourceDirectory: source, destinationDirectory: destination, names: ["control.yaml"]
+        ))
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: outside.path), [])
     }
 
     func testDecompilerInstallPinsVersionSourceAndTelemetryEnvironment() throws {
@@ -434,10 +673,12 @@ final class AssetFetcherTests: XCTestCase, @unchecked Sendable {
                 ])
                 XCTAssertEqual(timeout, 240)
                 try FileManager.default.createDirectory(at: tool.deletingLastPathComponent(), withIntermediateDirectories: true)
-                try Data().write(to: tool)
+                try Self.writeExecutableELF(to: tool)
                 return ""
             }
-            XCTAssertEqual(arguments, [tool.path, "--version"])
+            XCTAssertTrue(arguments[0].hasPrefix("/proc/"))
+            XCTAssertTrue(arguments[0].contains("/fd/"))
+            XCTAssertEqual(Array(arguments.dropFirst()), ["--version"])
             XCTAssertEqual(timeout, 30)
             return "ilspycmd: 11.0.0.9375\nICSharpCode.Decompiler: 11.0.0.9375\n"
         }

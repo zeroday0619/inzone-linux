@@ -3,6 +3,12 @@ import FoundationNetworking
 import Glibc
 import InzoneCore
 
+@_silgen_name("renameat2")
+private func fetchRenameAt2(
+    _ oldDirectory: Int32, _ oldPath: UnsafePointer<CChar>,
+    _ newDirectory: Int32, _ newPath: UnsafePointer<CChar>, _ flags: UInt32
+) -> Int32
+
 public struct AssetFetchOptions: Sendable {
     public let repository: URL
     public let installer: URL?
@@ -23,6 +29,7 @@ public struct AssetFetchOptions: Sendable {
 public struct AssetFetcher: Sendable {
     public static let decompilerVersion = "11.0.0.9375"
     static let blockSize = 1024 * 1024
+    static let managedPayloadManifestName = ".inzone-managed-payload.json"
 
     public let options: AssetFetchOptions
     public let runner: any CommandRunning
@@ -128,6 +135,7 @@ public struct AssetFetcher: Sendable {
 
     func prepareDecompiler(_ path: URL) throws -> URL {
         let path = path.standardizedFileURL.resolvingSymlinksInPath()
+        try Self.rejectVendorUpdaterExecutable(path)
         if !FileManager.default.fileExists(atPath: path.path) {
             guard !options.offline else {
                 throw InzoneError.message("Offline mode requires an installed ilspycmd; use --ilspycmd PATH.")
@@ -142,7 +150,7 @@ public struct AssetFetcher: Sendable {
                 "--version", Self.decompilerVersion, "--source", "https://api.nuget.org/v3/index.json",
             ], timeout: 240)
         }
-        let version = try runTool([path.path, "--version"], timeout: 30)
+        let version = try runVerifiedDecompiler(path, arguments: ["--version"], timeout: 30)
         guard version.components(separatedBy: .newlines).contains(where: {
             $0.trimmingCharacters(in: .whitespaces) == "ilspycmd: \(Self.decompilerVersion)"
         }) else {
@@ -152,6 +160,8 @@ public struct AssetFetcher: Sendable {
     }
 
     func prepare(installer: URL, metadata: InstallerMetadata, sevenZip: URL, decompiler: URL) throws {
+        try Self.rejectVendorUpdaterExecutable(sevenZip)
+        try Self.rejectVendorUpdaterExecutable(decompiler)
         let manager = FileManager.default
         let analysis = options.repository.appendingPathComponent("analysis")
         try manager.createDirectory(at: analysis, withIntermediateDirectories: true)
@@ -172,28 +182,38 @@ public struct AssetFetcher: Sendable {
         }
         let decompiled = stage.appendingPathComponent("decompiled")
         try manager.createDirectory(at: decompiled, withIntermediateDirectories: false)
-        for type in [AssetExport.equalizerSourceType, AssetExport.presetSourceType] {
+        for target in AssetExport.managedSourceTargets {
+            let type = target.typeName
             print("Extracting " + (type.split(separator: ".").last.map(String.init) ?? type) + "...")
-            let content = try runTool([decompiler.path, "--disable-updatecheck", "-t", type,
-                                       payload.appendingPathComponent("inzonehub.dll").path], timeout: 180)
+            let content = try runVerifiedDecompiler(
+                decompiler,
+                arguments: ["--disable-updatecheck", "-t", type,
+                            payload.appendingPathComponent("inzonehub.dll").path],
+                timeout: 180
+            )
             try Data(content.utf8).write(to: decompiled.appendingPathComponent(type + ".decompiled.cs"))
         }
         let assets = stage.appendingPathComponent("assets")
         try FilterBank.export(payload: payload, destination: assets)
         try AssetExport.equalizerTables(payload: payload, decompiled: decompiled, destination: assets)
         try AssetExport.presets(payload: payload, decompiled: decompiled, destination: assets)
+        let inventory = stage.appendingPathComponent("reverse-engineering-inventory.json")
+        try AssetExport.reverseEngineeringInventory(
+            payload: payload, decompiled: decompiled,
+            decompilerVersion: Self.decompilerVersion, destination: inventory
+        )
 
         // Publication starts only after all extraction and transformation steps succeed.
-        for name in metadata.payload.keys.sorted() {
-            try Self.publishFile(payload.appendingPathComponent(name), destination: analysis.appendingPathComponent("payload/" + name))
-        }
+        try Self.publishManagedPayload(
+            sourceDirectory: payload, destinationDirectory: analysis.appendingPathComponent("payload"),
+            names: Array(metadata.payload.keys)
+        )
         for source in try manager.contentsOfDirectory(at: decompiled, includingPropertiesForKeys: nil).sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
             try Self.publishFile(source, destination: analysis.appendingPathComponent("decompiled/" + source.lastPathComponent))
         }
-        for source in try manager.contentsOfDirectory(at: assets, includingPropertiesForKeys: nil).sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
-            try Self.publishFile(source, destination: options.repository.appendingPathComponent("assets/" + source.lastPathComponent))
-        }
-        print("Ready: analysis/payload, analysis/decompiled, assets (all ignored by Git).")
+        try Self.publishFile(inventory, destination: analysis.appendingPathComponent("reverse-engineering-inventory.json"))
+        try Self.publishGeneratedDirectory(assets, destination: options.repository.appendingPathComponent("assets"))
+        print("Ready: analysis/payload, analysis/decompiled, analysis/reverse-engineering-inventory.json, assets (all ignored by Git).")
     }
 
     static func extractMSI(installer: URL, destination: URL, offset: UInt64, size: Int64) throws {
@@ -224,6 +244,186 @@ public struct AssetFetcher: Sendable {
         try stagedOutput.publish()
     }
 
+    static func publishGeneratedDirectory(_ staged: URL, destination: URL) throws {
+        try validateGeneratedDirectory(staged)
+        let sourceParent = staged.deletingLastPathComponent()
+        let destinationParent = destination.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: destinationParent, withIntermediateDirectories: true)
+        let sourceDescriptor = Glibc.open(sourceParent.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard sourceDescriptor >= 0 else {
+            throw InzoneError.message("Cannot open generated asset parent directory: \(sourceParent.path)")
+        }
+        defer { Glibc.close(sourceDescriptor) }
+        let destinationDescriptor = Glibc.open(
+            destinationParent.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC
+        )
+        guard destinationDescriptor >= 0 else {
+            throw InzoneError.message("Cannot open asset destination parent directory: \(destinationParent.path)")
+        }
+        defer { Glibc.close(destinationDescriptor) }
+
+        var destinationStatus = stat()
+        let destinationResult = Glibc.fstatat(
+            destinationDescriptor, destination.lastPathComponent, &destinationStatus, AT_SYMLINK_NOFOLLOW
+        )
+        let exchanged = destinationResult == 0
+        if exchanged {
+            guard (destinationStatus.st_mode & S_IFMT) == S_IFDIR else {
+                throw InzoneError.message("Asset destination must be a regular directory: \(destination.path)")
+            }
+            let result = staged.lastPathComponent.withCString { sourceName in
+                destination.lastPathComponent.withCString { destinationName in
+                    fetchRenameAt2(sourceDescriptor, sourceName, destinationDescriptor, destinationName, 2)
+                }
+            }
+            guard result == 0 else {
+                throw InzoneError.message("Cannot atomically exchange generated assets: \(String(cString: strerror(errno))).")
+            }
+        } else {
+            guard errno == ENOENT else {
+                throw InzoneError.message("Cannot inspect asset destination: \(String(cString: strerror(errno))).")
+            }
+            let result = staged.lastPathComponent.withCString { sourceName in
+                destination.lastPathComponent.withCString { destinationName in
+                    Glibc.renameat(sourceDescriptor, sourceName, destinationDescriptor, destinationName)
+                }
+            }
+            guard result == 0 else {
+                throw InzoneError.message("Cannot publish generated assets: \(String(cString: strerror(errno))).")
+            }
+        }
+        guard Glibc.fsync(destinationDescriptor) == 0 else {
+            let synchronizeError = String(cString: strerror(errno))
+            let rollbackResult: Int32
+            if exchanged {
+                rollbackResult = destination.lastPathComponent.withCString { destinationName in
+                    staged.lastPathComponent.withCString { sourceName in
+                        fetchRenameAt2(destinationDescriptor, destinationName, sourceDescriptor, sourceName, 2)
+                    }
+                }
+            } else {
+                rollbackResult = destination.lastPathComponent.withCString { destinationName in
+                    staged.lastPathComponent.withCString { sourceName in
+                        Glibc.renameat(destinationDescriptor, destinationName, sourceDescriptor, sourceName)
+                    }
+                }
+            }
+            guard rollbackResult == 0 else {
+                throw InzoneError.message(
+                    "Cannot synchronize or roll back generated asset publication: \(synchronizeError)."
+                )
+            }
+            throw InzoneError.message("Cannot synchronize generated asset publication: \(synchronizeError).")
+        }
+    }
+
+    private static func validateGeneratedDirectory(_ directory: URL) throws {
+        var rootStatus = stat()
+        guard Glibc.lstat(directory.path, &rootStatus) == 0, (rootStatus.st_mode & S_IFMT) == S_IFDIR else {
+            throw InzoneError.message("Generated assets must be a regular directory: \(directory.path)")
+        }
+        guard let enumerator = FileManager.default.enumerator(
+            at: directory,
+            includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey],
+            options: []
+        ) else {
+            throw InzoneError.message("Cannot enumerate generated assets: \(directory.path)")
+        }
+        for case let entry as URL in enumerator {
+            let values = try entry.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey])
+            guard values.isSymbolicLink != true,
+                  values.isDirectory == true || values.isRegularFile == true else {
+                throw InzoneError.message("Generated assets contain a link or special file: \(entry.path)")
+            }
+        }
+    }
+
+    static func publishManagedPayload(sourceDirectory: URL, destinationDirectory: URL, names: [String]) throws {
+        let manager = FileManager.default
+        let publishableNames = publishablePayloadNames(names)
+        for name in publishableNames {
+            guard !name.isEmpty, name != ".", name != "..", !name.contains("/"),
+                  !name.contains("\\"), !name.contains("\0") else {
+                throw InzoneError.message("Invalid managed payload filename: \(name)")
+            }
+            let source = sourceDirectory.appendingPathComponent(name)
+            let values = try source.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+            guard values.isRegularFile == true, values.isSymbolicLink != true else {
+                throw InzoneError.message("Expected a regular managed payload file: \(name)")
+            }
+        }
+        let destinationParent = destinationDirectory.deletingLastPathComponent()
+        try manager.createDirectory(at: destinationParent, withIntermediateDirectories: true)
+        var destinationStatus = stat()
+        let destinationResult = Glibc.lstat(destinationDirectory.path, &destinationStatus)
+        if destinationResult == 0 {
+            guard (destinationStatus.st_mode & S_IFMT) == S_IFDIR else {
+                throw InzoneError.message("Managed payload destination must be a regular directory: \(destinationDirectory.path)")
+            }
+        } else if errno != ENOENT {
+            throw InzoneError.message("Cannot inspect managed payload destination: \(destinationDirectory.path)")
+        }
+        let previousManagedNames = destinationResult == 0
+            ? try managedPayloadNames(in: destinationDirectory) : []
+        let staged = destinationParent.appendingPathComponent(".payload-publish-" + UUID().uuidString.lowercased())
+        try manager.createDirectory(
+            at: staged, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700]
+        )
+        defer { try? manager.removeItem(at: staged) }
+        if destinationResult == 0 {
+            let replacedNames = Set(publishableNames).union(previousManagedNames)
+            for name in try manager.contentsOfDirectory(atPath: destinationDirectory.path).sorted()
+                where name != managedPayloadManifestName
+                    && !replacedNames.contains(name)
+                    && !AssetExport.isKnownVendorFirmwareArtifact(name)
+            {
+                try manager.copyItem(
+                    at: destinationDirectory.appendingPathComponent(name),
+                    to: staged.appendingPathComponent(name)
+                )
+            }
+        }
+        for name in publishableNames {
+            try publishFile(
+                sourceDirectory.appendingPathComponent(name), destination: staged.appendingPathComponent(name)
+            )
+        }
+        let manifest = ManagedPayloadManifest(schemaVersion: 1, files: publishableNames)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        try AtomicFile.write(
+            encoder.encode(manifest) + Data([0x0A]),
+            to: staged.appendingPathComponent(managedPayloadManifestName), permissions: 0o644
+        )
+        try publishGeneratedDirectory(staged, destination: destinationDirectory)
+    }
+
+    static func removeStaleFirmwareArtifacts(from directory: URL) throws {
+        let descriptor = Glibc.open(directory.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard descriptor >= 0 else {
+            throw InzoneError.message("Cannot open managed payload directory: \(directory.path)")
+        }
+        defer { Glibc.close(descriptor) }
+        try removeStaleFirmwareArtifacts(fromDirectoryDescriptor: descriptor, directory: directory)
+    }
+
+    private static func removeStaleFirmwareArtifacts(fromDirectoryDescriptor descriptor: Int32, directory: URL) throws {
+        for name in try FileManager.default.contentsOfDirectory(atPath: directory.path).sorted()
+            where AssetExport.isKnownVendorFirmwareArtifact(name)
+        {
+            var status = stat()
+            guard Glibc.fstatat(descriptor, name, &status, AT_SYMLINK_NOFOLLOW) == 0 else {
+                if errno == ENOENT { continue }
+                throw InzoneError.message("Cannot inspect stale firmware artifact: \(name)")
+            }
+            let fileType = status.st_mode & S_IFMT
+            guard fileType == S_IFREG || fileType == S_IFLNK else { continue }
+            guard Glibc.unlinkat(descriptor, name, 0) == 0 || errno == ENOENT else {
+                throw InzoneError.message("Cannot remove stale firmware artifact: \(name)")
+            }
+        }
+    }
+
     private func executable(_ name: String) -> URL? {
         for directory in (environment["PATH"] ?? "/usr/local/bin:/usr/bin:/bin").split(separator: ":", omittingEmptySubsequences: false) {
             let url = URL(fileURLWithPath: directory.isEmpty ? "." : String(directory), isDirectory: true).appendingPathComponent(name)
@@ -234,12 +434,140 @@ public struct AssetFetcher: Sendable {
 
     private func runTool(_ arguments: [String], timeout: TimeInterval) throws -> String {
         do {
+            if let executable = arguments.first {
+                try Self.rejectVendorUpdaterExecutable(URL(fileURLWithPath: executable))
+            }
             return try runner.run(arguments, input: nil, timeout: timeout)
         } catch let error as CommandError {
             let detail = error.output.trimmingCharacters(in: .whitespacesAndNewlines).suffix(3000)
             let reason = error.timedOut ? "timed out" : "failed"
             throw InzoneError.message("\(URL(fileURLWithPath: arguments[0]).lastPathComponent) \(reason): \(detail)")
         }
+    }
+
+    private func runVerifiedDecompiler(
+        _ executable: URL, arguments: [String], timeout: TimeInterval
+    ) throws -> String {
+        try Self.rejectVendorUpdaterExecutable(executable)
+        let handle = try Self.openValidatedDecompilerExecutable(executable)
+        defer { try? handle.close() }
+        let descriptorPath = "/proc/\(Glibc.getpid())/fd/\(handle.fileDescriptor)"
+        return try runTool([descriptorPath] + arguments, timeout: timeout)
+    }
+
+    static func openValidatedDecompilerExecutable(_ executable: URL) throws -> FileHandle {
+        let descriptor = Glibc.open(executable.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        guard descriptor >= 0 else {
+            throw InzoneError.message("Cannot open ilspycmd as a regular file: \(executable.path)")
+        }
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+        do {
+            var status = stat()
+            guard Glibc.fstat(descriptor, &status) == 0, (status.st_mode & S_IFMT) == S_IFREG,
+                  status.st_size > 0, status.st_size <= 64 * 1024 * 1024,
+                  status.st_mode & 0o111 != 0 else {
+                throw InzoneError.message("ilspycmd must be an executable regular file no larger than 64 MiB.")
+            }
+            let data = try handle.readToEnd() ?? Data()
+            let bytes = [UInt8](data)
+            if bytes.count >= 2, bytes[0] == 0x4D, bytes[1] == 0x5A {
+                throw InzoneError.message("PE executables cannot be used as ilspycmd.")
+            }
+            func unsigned16(_ offset: Int) -> UInt16 {
+                UInt16(bytes[offset]) | UInt16(bytes[offset + 1]) << 8
+            }
+            func unsigned32(_ offset: Int) -> UInt32 {
+                UInt32(bytes[offset]) | UInt32(bytes[offset + 1]) << 8
+                    | UInt32(bytes[offset + 2]) << 16 | UInt32(bytes[offset + 3]) << 24
+            }
+            func unsigned64(_ offset: Int) -> UInt64 {
+                (0..<8).reduce(UInt64(0)) { $0 | UInt64(bytes[offset + $1]) << UInt64($1 * 8) }
+            }
+            #if arch(x86_64)
+            let expectedMachine: UInt16 = 62
+            let architecture = "x86_64"
+            #elseif arch(arm64)
+            let expectedMachine: UInt16 = 183
+            let architecture = "arm64"
+            #else
+            #error("AssetFetcher supports ilspycmd only on x86_64 and arm64 hosts.")
+            #endif
+            guard bytes.count >= 64, Array(bytes[0..<4]) == [0x7F, 0x45, 0x4C, 0x46],
+                  bytes[4] == 2, bytes[5] == 1, bytes[6] == 1,
+                  unsigned16(18) == expectedMachine else {
+                throw InzoneError.message("ilspycmd must be an ELF64 little-endian \(architecture) executable.")
+            }
+            let programOffset = unsigned64(32)
+            let programEntrySize = UInt64(unsigned16(54))
+            let programCount = UInt64(unsigned16(56))
+            let (programBytes, programOverflow) = programEntrySize.multipliedReportingOverflow(by: programCount)
+            let (programEnd, endOverflow) = programOffset.addingReportingOverflow(programBytes)
+            guard !programOverflow, !endOverflow, programEntrySize >= 56, programCount > 0,
+                  programEnd <= UInt64(bytes.count) else {
+                throw InzoneError.message("ilspycmd contains an invalid ELF program-header table.")
+            }
+            let executableLoad = (0..<Int(programCount)).contains { index in
+                let offset = Int(programOffset + UInt64(index) * programEntrySize)
+                return unsigned32(offset) == 1 && unsigned32(offset + 4) & 1 != 0
+            }
+            guard executableLoad else {
+                throw InzoneError.message("ilspycmd ELF does not contain an executable PT_LOAD segment.")
+            }
+            return handle
+        } catch {
+            try? handle.close()
+            throw error
+        }
+    }
+
+    static func rejectVendorUpdaterExecutable(_ executable: URL) throws {
+        let resolvedExecutable = executable.standardizedFileURL.resolvingSymlinksInPath()
+        let name = resolvedExecutable.lastPathComponent.lowercased()
+        let updater = name.contains("firmware") || name.contains("fwupdate")
+            || name == "blhost.exe" || name == "glhubupdatetoolcli.exe"
+            || (name.hasPrefix("update") && name.hasSuffix(".bat"))
+        guard !updater else {
+            throw InzoneError.message("Firmware updater artifacts are static-catalog-only and cannot be executed: \(resolvedExecutable.lastPathComponent)")
+        }
+    }
+
+    static func publishablePayloadNames(_ names: [String]) -> [String] {
+        names.filter { !AssetExport.isKnownVendorFirmwareArtifact($0) }.sorted()
+    }
+
+    private static func managedPayloadNames(in directory: URL) throws -> Set<String> {
+        let manifest = directory.appendingPathComponent(managedPayloadManifestName)
+        let descriptor = Glibc.open(manifest.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        guard descriptor >= 0 else {
+            if errno == ENOENT { return [] }
+            throw InzoneError.message("Cannot inspect managed payload manifest: \(manifest.path)")
+        }
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+        defer { try? handle.close() }
+        var status = stat()
+        guard Glibc.fstat(descriptor, &status) == 0, (status.st_mode & S_IFMT) == S_IFREG else {
+            throw InzoneError.message("Managed payload manifest must be a regular file: \(manifest.path)")
+        }
+        let value = try JSONDecoder().decode(ManagedPayloadManifest.self, from: handle.readToEnd() ?? Data())
+        guard value.schemaVersion == 1, value.files == value.files.sorted(),
+              Set(value.files).count == value.files.count,
+              value.files.allSatisfy({ name in
+                  !name.isEmpty && name != "." && name != ".." && !name.contains("/")
+                      && !name.contains("\\") && !name.contains("\0")
+              }) else {
+            throw InzoneError.message("Invalid managed payload manifest: \(manifest.path)")
+        }
+        return Set(value.files)
+    }
+}
+
+private struct ManagedPayloadManifest: Codable {
+    let schemaVersion: Int
+    let files: [String]
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case files
     }
 }
 

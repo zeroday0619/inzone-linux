@@ -38,6 +38,27 @@ final class CommandLineTests: XCTestCase {
                     try data.write(to: paths.configDirectory.appendingPathComponent("\(name).conf"))
                 }
                 try Data(contentsOf: paths.configDirectory.appendingPathComponent("balanced.conf")).write(to: paths.activeProfile)
+                try manager.createDirectory(
+                    at: paths.pluginURL.deletingLastPathComponent(), withIntermediateDirectories: true
+                )
+                try Data().write(to: paths.pluginURL)
+                let downmixChannels = Dictionary(uniqueKeysWithValues: FilterBank.channels.map {
+                    ($0.name, [$0.azimuth, $0.polar])
+                })
+                try Data(JSONSupport.encode([
+                    "rate": 48000, "taps": 512, "downmix_channels": downmixChannels,
+                ]).utf8).write(to: paths.assetsDirectory.appendingPathComponent("manifest.json"))
+                let downmix = paths.assetsDirectory.appendingPathComponent("downmix", isDirectory: true)
+                try manager.createDirectory(at: downmix, withIntermediateDirectories: true)
+                for channel in GraphRenderer.channels {
+                    try Data().write(to: downmix.appendingPathComponent(channel + ".wav"))
+                }
+                let presets = CommandLineTests.repository.appendingPathComponent("assets/sony-presets.json")
+                if manager.fileExists(atPath: presets.path) {
+                    try Data(contentsOf: presets).write(
+                        to: paths.assetsDirectory.appendingPathComponent("sony-presets.json")
+                    )
+                }
                 // Copying bytes keeps each fixture independent of source symlinks and build artifacts.
                 try Data(contentsOf: source).write(to: binary)
                 try manager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: binary.path)
@@ -236,6 +257,108 @@ final class CommandLineTests: XCTestCase {
         }
     }
 
+    func testCustomProfileCLIUsesStableIdentifiersAndDeletionGuards() throws {
+        try withFixture { fixture in
+            let created = try fixture.command(["--profile-create", "Custom", "music"])
+                .output.trimmingCharacters(in: .whitespacesAndNewlines)
+            XCTAssertNotNil(UUID(uuidString: created))
+            let clone = try fixture.command(["--profile-clone", created, "Clone"])
+                .output.trimmingCharacters(in: .whitespacesAndNewlines)
+            XCTAssertNotEqual(clone, created)
+            try fixture.command(["--profile-rename", created, "Renamed"])
+
+            let profiles = try XCTUnwrap(JSONSupport.decode(
+                Data(try fixture.command(["--profiles"]).output.utf8)
+            ) as? [[String: Any]])
+            XCTAssertEqual(profiles.count, SettingsStore.profiles.count + 2)
+            XCTAssertEqual(profiles.first { $0["id"] as? String == created }?["name"] as? String, "Renamed")
+
+            try fixture.command(["--auto-bind", "game", created])
+            try fixture.command(["--profile-delete", created], success: false)
+            try fixture.command(["--auto-remove", "game"])
+            try fixture.command(["--profile-delete", created])
+            let remaining = try XCTUnwrap(JSONSupport.decode(
+                Data(try fixture.command(["--profiles"]).output.utf8)
+            ) as? [[String: Any]])
+            XCTAssertNil(remaining.first { $0["id"] as? String == created })
+            XCTAssertNotNil(remaining.first { $0["id"] as? String == clone })
+        }
+    }
+
+    func testWindowsCollectionCLIAppendsFreshIDsAndExplicitReplacePreservesIDs() throws {
+        try withFixture { fixture in
+            let identifier = UUID().uuidString.uppercased()
+            let source = fixture.directory.appendingPathComponent("collection.json")
+            let destination = fixture.directory.appendingPathComponent("exported-collection.json")
+            let input: [[String: Any]] = [[
+                "ProfileID": identifier, "ProfileName": "Imported", "EQPreset": "FLAT",
+                "Surround": false, "DynamicRangeCompression": "OFF",
+                "Future": ["value": 7],
+            ]]
+            try Data(JSONSupport.encode(input).utf8).write(to: source)
+
+            try fixture.command(["--windows-import-collection", source.path])
+            try fixture.command(["--windows-export-collection", destination.path])
+
+            let output = try XCTUnwrap(
+                (JSONSupport.decode(Data(contentsOf: destination)) as? [[String: Any]])?.first
+            )
+            let appendedIdentifier = try XCTUnwrap(output["ProfileID"] as? String)
+            XCTAssertNotNil(UUID(uuidString: appendedIdentifier))
+            XCTAssertNotEqual(appendedIdentifier.lowercased(), identifier.lowercased())
+            XCTAssertEqual(output["ProfileName"] as? String, "Imported")
+            XCTAssertEqual((output["Future"] as? [String: Any])?["value"] as? Int, 7)
+
+            try fixture.command(["--windows-replace-collection", source.path])
+            let before = try Data(contentsOf: destination)
+            try fixture.command(["--windows-export-collection", destination.path], success: false)
+            XCTAssertEqual(try Data(contentsOf: destination), before)
+            try fixture.command(["--windows-export-collection", destination.path, "--force"])
+            let replaced = try XCTUnwrap(
+                (JSONSupport.decode(Data(contentsOf: destination)) as? [[String: Any]])?.first
+            )
+            XCTAssertEqual(replaced["ProfileID"] as? String, identifier)
+            XCTAssertEqual((replaced["Future"] as? [String: Any])?["value"] as? Int, 7)
+        }
+    }
+
+    func testFirmwareMutationCommandsAndInvalidDeviceFieldsFailBeforeDeviceAccess() throws {
+        try withFixture { fixture in
+            for command in ["--firmware-update", "--update-firmware", "--flash-firmware", "--firmware-download"] {
+                let result = try fixture.command([command], success: false)
+                XCTAssertTrue(result.error.contains("intentionally not implemented"), command)
+            }
+            let invalid = try fixture.command(["--device-set", "firmware", "1"], success: false)
+            XCTAssertTrue(invalid.error.contains("Unknown device field or out-of-range value: firmware"))
+            XCTAssertFalse(invalid.error.contains("HID"))
+            let h9IIMicrophoneSet = try fixture.command(
+                ["--device-set", "headset_microphone_mute", "1"], success: false
+            )
+            XCTAssertTrue(h9IIMicrophoneSet.error.contains(
+                "Unknown device field or out-of-range value: headset_microphone_mute"
+            ))
+            XCTAssertFalse(h9IIMicrophoneSet.error.contains("HID"))
+            let invalidBalance = try fixture.command(
+                ["--device-set", "game_chat", "51"], success: false
+            )
+            XCTAssertTrue(invalidBalance.error.contains(
+                "Unknown device field or out-of-range value: game_chat"
+            ))
+            XCTAssertFalse(invalidBalance.error.contains("HID"))
+        }
+    }
+
+    func testPersonalizationCleanupCommandsReportEmptyState() throws {
+        try withFixture { fixture in
+            let status = try fixture.command(["--personalize-cleanup-status"]).output
+            XCTAssertEqual(try JSONSupport.decode(Data(status.utf8)) as? [String], [])
+            XCTAssertEqual(
+                try fixture.command(["--personalize-cleanup"]).output,
+                "Retired personal filter banks were cleaned.\n"
+            )
+        }
+    }
+
     func testAutomationOutputEscapesTerminalControlsWithoutChangingRuleIdentity() throws {
         try withFixture { fixture in
             let identity = "game-\u{007F}\u{0085}\u{202E}\u{2028}\u{2029}\u{E0001}.exe"
@@ -271,20 +394,18 @@ final class CommandLineTests: XCTestCase {
         }
     }
 
-    func testWindowsListEscapesTerminalControlsWithoutChangingProfileName() throws {
+    func testWindowsListRejectsTerminalControlsInProfileNamesSafely() throws {
         try withFixture { fixture in
             let name = "\u{C708}\u{B3C4}\u{C6B0}-\u{0001}\u{001B}\u{007F}\u{0085}\u{202E}\u{2028}\u{2029}\u{E0001}-\u{D504}\u{B85C}\u{D544}"
             let source = fixture.directory.appendingPathComponent("windows-terminal-controls.json")
             let input: [[String: Any]] = [["ProfileName": name, "EQPreset": "CUSTOM"]]
             try Data(JSONSupport.encode(input).utf8).write(to: source)
 
-            let output = try fixture.command(["--windows-list", source.path]).output
+            let result = try fixture.command(["--windows-list", source.path], success: false)
 
-            XCTAssertTrue(output.hasPrefix("1: "))
-            let json = String(output.dropFirst(3)).trimmingCharacters(in: .newlines)
-            let profile = try XCTUnwrap(JSONSupport.decode(Data(json.utf8)) as? [String: Any])
-            XCTAssertEqual(profile["name"] as? String, name)
-            assertTerminalSafeJSON(output)
+            XCTAssertEqual(result.output, "")
+            XCTAssertTrue(result.error.contains("no control or format characters"))
+            assertTerminalSafeError(result.error)
         }
     }
 

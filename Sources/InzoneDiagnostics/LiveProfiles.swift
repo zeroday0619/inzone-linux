@@ -186,11 +186,15 @@ final class LiveSessionState {
         settings = try LiveSavedFile(paths.configDirectory.appendingPathComponent("profile-settings.json"))
         manual = try LiveSavedFile(paths.configDirectory.appendingPathComponent("manual-switch"))
         rules = try LiveSavedFile(AutomationStore(paths: paths).fileURL)
-        _ = try SettingsStore(paths: paths).load()
+        let settingsStore = SettingsStore(paths: paths)
+        _ = try settingsStore.load()
         _ = try AutomationStore(paths: paths).load()
         let current = try ProfileController(paths: paths, runner: runner).status()
-        initialProfile = current == "original" ? "restore" : current
-        guard (ProfileController.profiles + ["restore"]).contains(initialProfile) else {
+        if current == "original" || current == "restore" {
+            initialProfile = "restore"
+        } else if let profile = try settingsStore.profileIfAvailable(current) {
+            initialProfile = profile.identifier
+        } else {
             throw InzoneError.message("The initial profile cannot be identified safely: \(current)")
         }
         defaultSink = try runner.run(["pactl", "get-default-sink"]).trimmingCharacters(in: .whitespacesAndNewlines)

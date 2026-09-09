@@ -114,6 +114,37 @@ final class SupportTests: XCTestCase {
         XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o600)
     }
 
+    func testAtomicNoReplaceRejectsExistingAndRacingDestinations() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let destination = directory.appendingPathComponent("result")
+        try AtomicFile.write(Data("existing".utf8), to: destination)
+        XCTAssertThrowsError(try AtomicFile.write(
+            Data("replacement".utf8), to: destination, replacing: false
+        ))
+        XCTAssertEqual(try String(contentsOf: destination, encoding: .utf8), "existing")
+
+        try FileManager.default.removeItem(at: destination)
+        let stagedFile = try AtomicFile.stage(for: destination, replacing: false)
+        try stagedFile.fileHandle.write(contentsOf: Data("staged".utf8))
+        try Data("racing".utf8).write(to: destination)
+        XCTAssertThrowsError(try stagedFile.publish())
+        XCTAssertEqual(try String(contentsOf: destination, encoding: .utf8), "racing")
+    }
+
+    func testPostCommitDirectorySyncRetriesInterruptAndDoesNotThrowFailure() {
+        var attempts = 0
+        let synchronized = AtomicFile.synchronizeDirectoryAfterCommit(-1) { _ in
+            attempts += 1
+            errno = attempts == 1 ? EINTR : EIO
+            return -1
+        }
+        XCTAssertFalse(synchronized)
+        XCTAssertEqual(attempts, 2)
+        XCTAssertTrue(AtomicFile.synchronizeDirectoryAfterCommit(-1) { _ in 0 })
+    }
+
     func testTerminalOutputEscapesControlsAndPreservesOptionalNewlines() {
         let value = "\u{C815}\u{C0C1}\u{001B}\u{007F}\u{0085}\u{202E}\u{2028}\u{2029}\n\u{B05D}"
         XCTAssertEqual(

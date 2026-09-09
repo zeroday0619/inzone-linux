@@ -1,10 +1,89 @@
 import CoreFoundation
 import Foundation
+import Glibc
 import InzoneCore
+
+public struct ManagedSourceTarget: Equatable, Sendable {
+    public let typeName: String
+    public let featureArea: String
+
+    public init(typeName: String, featureArea: String) {
+        self.typeName = typeName
+        self.featureArea = featureArea
+    }
+}
 
 public enum AssetExport {
     public static let equalizerSourceType = "PCWidget.ViewModel.ApoFileCommunication"
     public static let presetSourceType = "PCWidget.ViewModel.SoundQualitySettingsViewModel"
+
+    public static let managedSourceTargets: [ManagedSourceTarget] = [
+        .init(typeName: "PCWidget.Communication.AudioControl", featureArea: "audio-routing"),
+        .init(typeName: "PCWidget.Communication.AudioDeviceEnumerator", featureArea: "device-identification"),
+        .init(typeName: "PCWidget.Communication.HeadsetModels", featureArea: "device-identification"),
+        .init(typeName: "PCWidget.Communication.HrtfFileExtensions", featureArea: "spatial-audio"),
+        .init(typeName: "PCWidget.Communication.HrtfFileNames", featureArea: "spatial-audio"),
+        .init(typeName: "PCWidget.Communication.UsbCommunication", featureArea: "device-protocol"),
+        .init(typeName: "PCWidget.Communication.UsbPacket", featureArea: "device-protocol"),
+        .init(typeName: "PCWidget.Model.DRC", featureArea: "audio-processing"),
+        .init(typeName: "PCWidget.Model.EQ_AXIS", featureArea: "equalizer"),
+        .init(typeName: "PCWidget.Model.EQ_PRESET", featureArea: "equalizer"),
+        .init(typeName: "PCWidget.Model.SoundProfile", featureArea: "profile-management"),
+        .init(typeName: "PCWidget.Model.SoundProfileCollection", featureArea: "profile-management"),
+        .init(typeName: "PCWidget.Utility.CustomEnumConverter", featureArea: "profile-serialization"),
+        .init(typeName: "PCWidget.ViewModel.ADDRESS", featureArea: "device-protocol"),
+        .init(typeName: equalizerSourceType, featureArea: "audio-processing"),
+        .init(typeName: "PCWidget.ViewModel.ApoFileParam", featureArea: "audio-processing"),
+        .init(typeName: "PCWidget.ViewModel.BATTERY_STATUS", featureArea: "device-status"),
+        .init(typeName: "PCWidget.ViewModel.EVENT_ID", featureArea: "device-protocol"),
+        .init(typeName: "PCWidget.ViewModel.EVENT_TYPE", featureArea: "device-protocol"),
+        .init(typeName: "PCWidget.ViewModel.GUIDANCE_SETTING", featureArea: "device-settings"),
+        .init(typeName: "PCWidget.ViewModel.HCI_PACKET_TYPE", featureArea: "device-protocol"),
+        .init(typeName: "PCWidget.ViewModel.HciCommandPacket", featureArea: "device-protocol"),
+        .init(typeName: "PCWidget.ViewModel.HciCommunication", featureArea: "device-protocol"),
+        .init(typeName: "PCWidget.ViewModel.HciEventPacket", featureArea: "device-protocol"),
+        .init(typeName: "PCWidget.ViewModel.HciPacket", featureArea: "device-protocol"),
+        .init(typeName: "PCWidget.ViewModel.HciPacketBase", featureArea: "device-protocol"),
+        .init(typeName: "PCWidget.ViewModel.HeadsetParam", featureArea: "device-settings"),
+        .init(typeName: "PCWidget.ViewModel.HeadsetSettingsViewModel", featureArea: "device-settings"),
+        .init(typeName: "PCWidget.ViewModel.HidDevice", featureArea: "device-protocol"),
+        .init(typeName: "PCWidget.ViewModel.MODEL_ID", featureArea: "device-identification"),
+        .init(typeName: "PCWidget.ViewModel.MODE_BT_STARTUP", featureArea: "device-settings"),
+        .init(typeName: "PCWidget.ViewModel.NC_SETTING", featureArea: "device-settings"),
+        .init(typeName: "PCWidget.ViewModel.NC_STARTUP_MODE", featureArea: "device-settings"),
+        .init(typeName: "PCWidget.ViewModel.PcWidgetCommunication", featureArea: "device-protocol"),
+        .init(typeName: "PCWidget.ViewModel.SerialPortWrapper", featureArea: "device-protocol"),
+        .init(typeName: presetSourceType, featureArea: "profile-management"),
+        .init(typeName: "PCWidget.ViewModel.VP_LANG", featureArea: "device-settings"),
+        .init(typeName: "PCWidget.ViewModel.YamlType", featureArea: "audio-processing"),
+    ]
+
+    public static let featurePayloadNames = [
+        "control.yaml",
+        "downmix.hki",
+        "inzonehub.dll",
+        "inzonevirtualizer.dll",
+        "shp_for_game_v2.0_512tap.hki",
+        "wh_g910n_standard.ba",
+    ]
+
+    static let knownVendorFirmwareArtifactNames: Set<String> = [
+        "blhost.exe",
+        "earbudsfwupdate.dll",
+        "fwupdate_headset.dll",
+        "fwupdate_monitor.dll",
+        "fwupdatesharedlib.dll",
+        "glflash_v1.39.fl",
+        "glhubupdatetoolcli.exe",
+        "hidfwupdate_headset.dll",
+        "hidfwupdate_headset_hdx2987.",
+        "keyboardmousefwupdatedll.dll",
+        "update.bat",
+        "updatehub.bat",
+        "updatemt9052.bat",
+        "updatescaler.bat",
+        "wf_g700n_param.bin",
+    ]
 
     private static let presetNames = ["FLAT", "FPS1", "FPS2", "FPS3", "IMMERSION_FLAT", "BASS_BOOST", "MUSIC_VIDEO"]
     private static let equalizerFields = ["31_5Hz", "63Hz", "125Hz", "250Hz", "500Hz", "1kHz", "2kHz", "4kHz", "8kHz", "16kHz"]
@@ -97,6 +176,54 @@ public enum AssetExport {
         try write(result, name: "sony-presets.json", destination: destination)
     }
 
+    public static func reverseEngineeringInventory(
+        payload: URL, decompiled: URL, decompilerVersion: String, destination: URL
+    ) throws {
+        let managedSources = try managedSourceTargets.map { target -> [String: Any] in
+            let name = target.typeName + ".decompiled.cs"
+            let file = decompiled.appendingPathComponent(name)
+            let artifact = try regularFileArtifact(file, description: "decompiled source")
+            guard artifact.size > 0 else {
+                throw InzoneError.message("Decompiled source is empty: \(name)")
+            }
+            return [
+                "feature_area": target.featureArea,
+                "file": name,
+                "sha256": artifact.sha256,
+                "size": artifact.size,
+                "type": target.typeName,
+            ]
+        }
+        let sourceArtifacts = try featurePayloadNames.map { name -> [String: Any] in
+            let file = payload.appendingPathComponent(name)
+            let artifact = try regularFileArtifact(file, description: "feature payload")
+            return ["file": name, "sha256": artifact.sha256, "size": artifact.size]
+        }
+        let firmwareArtifacts = try FileManager.default.contentsOfDirectory(
+            at: payload, includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]
+        ).filter { isFirmwareArtifact($0.lastPathComponent) }.sorted {
+            $0.lastPathComponent < $1.lastPathComponent
+        }.map { file -> [String: Any] in
+            let artifact = try regularFileArtifact(file, description: "firmware artifact")
+            return [
+                "file": file.lastPathComponent,
+                "policy": "catalog-only-do-not-execute",
+                "sha256": artifact.sha256,
+                "size": artifact.size,
+            ]
+        }
+        let result: [String: Any] = [
+            "decompiler": ["name": "ilspycmd", "version": decompilerVersion],
+            "firmware_artifacts": firmwareArtifacts,
+            "firmware_policy": "version-query-and-static-catalog-only",
+            "managed_sources": managedSources,
+            "schema_version": 1,
+            "scope": "implemented-non-account-features",
+            "source_artifacts": sourceArtifacts,
+        ]
+        try write(result, to: destination)
+    }
+
     public static func disassemble(input: URL, start: UInt64, end: UInt64) throws -> String {
         let imageBase: UInt64 = 0x180000000
         let (startAddress, startOverflow) = start.addingReportingOverflow(imageBase)
@@ -142,7 +269,36 @@ public enum AssetExport {
     }
 
     private static func write(_ value: [String: Any], name: String, destination: URL) throws {
+        try write(value, to: destination.appendingPathComponent(name))
+    }
+
+    private static func write(_ value: [String: Any], to destination: URL) throws {
         let output = try JSONSupport.encode(value) + "\n"
-        try AtomicFile.write(Data(output.utf8), to: destination.appendingPathComponent(name), permissions: 0o644)
+        try AtomicFile.write(Data(output.utf8), to: destination, permissions: 0o644)
+    }
+
+    private static func regularFileArtifact(_ file: URL, description: String) throws -> (size: Int64, sha256: String) {
+        let descriptor = Glibc.open(file.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        guard descriptor >= 0 else {
+            throw InzoneError.message("Expected a regular \(description): \(file.lastPathComponent)")
+        }
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+        defer { try? handle.close() }
+        var status = stat()
+        guard Glibc.fstat(descriptor, &status) == 0, (status.st_mode & S_IFMT) == S_IFREG else {
+            throw InzoneError.message("Expected a regular \(description): \(file.lastPathComponent)")
+        }
+        return (size: Int64(status.st_size), sha256: try Digests.sha256(fileHandle: handle))
+    }
+
+    static func isFirmwareArtifact(_ name: String) -> Bool {
+        let value = name.lowercased()
+        return value.contains("firmware") || value.contains("fwupdate") || value == "blhost.exe"
+            || value == "glhubupdatetoolcli.exe" || value.hasSuffix(".fl") || value.hasSuffix("_param.bin")
+            || (value.hasPrefix("update") && value.hasSuffix(".bat"))
+    }
+
+    static func isKnownVendorFirmwareArtifact(_ name: String) -> Bool {
+        knownVendorFirmwareArtifactNames.contains(name.lowercased())
     }
 }

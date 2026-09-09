@@ -4,32 +4,35 @@
 [![Swift 6.3](https://img.shields.io/badge/Swift-6.3%2B-orange.svg)](https://www.swift.org)
 [![PipeWire](https://img.shields.io/badge/Audio-PipeWire%20%2F%20WirePlumber-brightgreen.svg)](https://pipewire.org)
 
-A native Linux driver and DSP audio stack for the **Sony INZONE H9 II (MDR-G900N / Model Code YY2987)** wireless gaming headset.
+A native Linux control and DSP audio stack for the **Sony INZONE H9 II (MDR-G900N / Model Code YY2987)** wireless gaming headset.
 
-Reverse-engineered from the Windows-only **INZONE Hub** utility, this project implements 7.1-channel spatial audio, Sony proprietary 10-band EQ and presets, USB HID hardware control (ANC, Ambient Sound, Sidetone, Game/Chat balance), and automated profile switching using **PipeWire**, **WirePlumber**, and an **Embedded Swift native LADSPA engine**.
+Reverse-engineered from the Windows-only **INZONE Hub** utility, this project implements layout-preserving 2.0, 5.1, and 7.1 audio rendering, Sony proprietary 10-band EQ and presets, USB HID hardware control, dynamic sound profiles, and automated profile switching using **PipeWire**, **WirePlumber**, and an **Embedded Swift native LADSPA engine**.
 
-Enjoy the complete feature set of the headset on Linux without requiring Windows utilities or virtual machines.
+Sony account and cloud functions are outside the project scope. Firmware support is deliberately limited to reading the versions installed on the headset and transceiver. The project does not look up, download, update, or flash firmware.
 
 ---
 
 ## Key Features
 
-- **Authentic Sony 7.1ch Spatial Audio**
-  - Real-time rendering driven by Sony official 512-tap FIR HRTF filters and the H9 II-dedicated 7-stage IIR Biquad hardware correction filter (`wh_g910n_standard.ba`).
+- **Sony Spatial Audio and Surround-Off Downmix**
+  - Direct 512-tap FIR rendering from Sony HRTF assets, followed by the H9 II-dedicated 7-stage IIR Biquad hardware correction filter (`wh_g910n_standard.ba`) when surround is enabled.
+  - Stereo, 5.1, and 7.1 virtual sinks preserve the source layout. Surround-off profiles use Sony `downmix.hki` instead of bypassing the Sony downmix path.
   - Integrated 32-sample lookahead internal spatial ALC (dynamic limiter) to prevent clipping and balance volume.
-- **Complete Hardware Control (USB HID)**
-  - Direct control over Active Noise Cancellation (ANC on/off), 20-step Ambient Sound level, Voice Focus mode, Sidetone (mic monitoring), and Game/Chat hardware balance.
-  - Configurable physical button toggle cycles, power-on defaults, auto-power-off timer, voice guidance language, and real-time battery status monitoring.
+- **H9 II Status and Hardware Control (USB HID)**
+  - Direct control over headphone hardware volume, headset microphone mute, Active Noise Cancellation, 20-step Ambient Sound level, Voice Focus, Sidetone, and Game/Chat hardware balance.
+  - Configurable physical button cycles, power-on defaults, auto-power-off timer, and voice guidance. Status includes battery, installed firmware, headphone, microphone, Bluetooth, and microphone-attachment state.
+  - Unsolicited HCI notifications update the TUI after a snapshot without allowing stale notifications to overwrite newer state.
 - **Sony Official 10-Band EQ & 7 Presets**
   - Built-in Flat, FPS 1/2/3, Immersion Flat (RPG), Bass Boost, and Music/Video presets utilizing Sony precision-tuned Biquad coefficient tables.
   - Fully customizable 10-band user EQ (-12 dB to +12 dB in 1 dB steps).
-- **Automatic Game & App Profile Switching**
+- **Dynamic Profiles and Automatic App Switching**
+  - Create, clone, rename, delete, import, and export custom profiles while retaining stable UUID identifiers and their routing templates.
   - Automatically switches to surround/FPS profiles when games launch (supporting native Linux, Steam, Proton, and Wine binaries) and switches to voice mode when Discord launches, restoring the previous profile when exited.
 - **Intuitive TUI & Powerful CLI**
   - Interactive terminal interface (`inzone-profile`) driven by SwiftTUI with mouse and keyboard controls, plus a comprehensive CLI for scripting, hotkeys, and window manager integration.
 - **Windows Profile & Personalized HRTF Interoperability**
-  - Import and export `SoundProfile.json` from/to Windows INZONE Hub.
-  - Import mobile ear-measurement personalization files (`personalized_hrtf.hki`, `YY2987.ba`) to apply personalized spatial audio on Linux.
+  - Import and export individual entries or complete Windows-compatible `SoundProfile.json` collections. The Linux collection path preserves known fields, ordering, identifiers, routing templates, and retained extension fields subject to validation limits.
+  - Import mobile ear-measurement personalization files (`personalized_hrtf.hki`, `YY2987.ba`) through an atomic activate-or-rollback lifecycle.
 
 ---
 
@@ -105,6 +108,13 @@ The details area describes the selected profile. Selecting a row does not apply 
 use **Apply** or **Enter** to activate the selection.
 The selected profile's description and sound-processing values appear in a separate
 detail column. Unavailable settings show `—`.
+
+Open **Manage profiles** or press **G** to create, duplicate, rename, or delete
+custom profiles and to import, replace, or export Windows collections. Custom
+profiles keep stable UUIDs, and the list pages through the five built-ins, up to
+256 custom profiles, and Restore. The TUI requests a literal confirmation token
+before deletion, explicit collection replacement, file overwrite, personalization reset,
+or replacement of an installed personal bank.
 
 ### Touch Layout
 
@@ -202,8 +212,9 @@ Selection and setting changes are blocked while an operation is in progress.
 
 | Shortcut | Action | Description |
 |:---:|:---|:---|
-| **↑ / ↓** or **1–6** | Move cursor | Browse through available profiles |
+| **↑ / ↓** | Move cursor | Browse built-in and custom profiles; long lists follow the selection |
 | **Enter** | Apply profile | Immediately commit selected profile and DSP graph to WirePlumber |
+| **G** | Manage profiles | Create, duplicate, rename, delete, import, replace, or export sound profiles |
 | **H** | Device controls | Open noise, sound, microphone, and system settings |
 | **E** | Edit 10-band EQ | Adjust bands from 31.5 Hz to 16 kHz (-12 to +12 dB) |
 | **S** | Select Sony preset | Choose from Flat, FPS 1/2/3, RPG, Bass Boost, or Music/Video |
@@ -238,6 +249,10 @@ corresponding drafts; unconfirmed drafts remain after a failure. If a draft's se
 is unavailable, refresh the connection or discard the drafts before applying.
 Drafts are held only for the current TUI session.
 
+Headset HCI events update asynchronously. Game, Chat, and microphone levels owned
+by PipeWire/PulseAudio are read with the snapshot and have no HCI notification;
+press **R** after changing those values in another mixer.
+
 - **← / → Arrow Keys**: Adjust selected hardware parameter (e.g., cycle ANC modes, change Sidetone level)
 - **Enter**: Apply the staged device and system-audio settings
 - **R**: Refresh live headset state (battery level, firmware version, etc.)
@@ -256,10 +271,24 @@ inzone-profile surround      # 7.1ch surround mode
 inzone-profile fps           # Footstep-boosted FPS mode
 inzone-profile music         # Music listening mode
 
-# Check current status and list profiles
+# Check current status and list built-in and custom profiles
 inzone-profile --status
-inzone-profile --list
+inzone-profile --profiles
+
+# Create from a built-in or custom base, then manage by stable UUID
+inzone-profile --profile-create "Tournament" fps
+inzone-profile --profile-clone PROFILE_UUID "Tournament copy"
+inzone-profile --profile-rename PROFILE_UUID "Tournament final"
+inzone-profile --profile-delete PROFILE_UUID
 ```
+
+Custom profiles inherit one of the five routing templates (`fps`, `music`,
+`voice`, `balanced`, or `surround`) and retain that template when renamed or
+round-tripped through the Linux collection path. Up to 256 custom profiles are
+stored in `~/.config/inzone-h9-ii/sound-profiles.json`, with a 24 MiB encoded
+collection limit that accounts for retained Windows objects. A profile cannot be
+deleted while it is active or referenced by an automation rule or pending
+restoration state.
 
 ### 2. Hardware Device Control (`--device-set`, `--device-status`)
 ```sh
@@ -272,14 +301,26 @@ inzone-profile --device-set anc 1
 # Set sidetone (mic monitoring) level (0 to 10)
 inzone-profile --device-set sidetone 4
 
-# Adjust ambient sound volume level (1 to 20)
+# Enter Ambient mode, then adjust its sound level (1 to 20)
+inzone-profile --device-set anc 2
 inzone-profile --device-set ambient_level 12
 
-# Adjust Game / Chat hardware balance (0 to 100, 50 is center)
+# Adjust Game / Chat hardware balance (0 to 100 in steps of 10, 50 is center)
 inzone-profile --device-set game_chat 50
 ```
 
-> **Supported hardware fields**: `anc`, `ambient_level`, `voice_focus`, `game_chat`, `sidetone`, `toggle_off`, `toggle_nc`, `toggle_ambient`, `nc_startup`, `bt_startup`, `auto_power`, `language`, `guidance`
+> **Supported hardware fields**: `headphone_volume`, `anc`, `ambient_level`, `voice_focus`, `game_chat`, `sidetone`, `toggle_off`, `toggle_nc`, `toggle_ambient`, `nc_startup`, `bt_startup`, `auto_power`, `language`, `guidance`
+
+The H9 II reports headphone and boom-microphone mute state through Events 33
+and 36. Hub 1.0.19.0 changes only the Event 33 volume value for this model and
+exposes the generic Event 36 SET button only for INZONE Buds. `--device-status`
+therefore reports both mute states without offering unsupported hardware SETs.
+
+`--device-status` sends read-only GET requests, including Event 3 for the
+firmware versions installed on the headset and transceiver. It does not query a
+release service or compare those values with a latest version. Event 160 and
+all firmware lookup, download, update, and flashing paths are intentionally
+unsupported.
 
 ### 3. DSP and EQ Parameter Control
 ```sh
@@ -363,7 +404,20 @@ inzone-profile --personalize-import /path/to/personalized_hrtf.hki /path/to/YY29
 
 # Enable personalized HRTF in surround profile
 inzone-profile --set surround hrtf '"personal"'
+
+# Reset profiles to the standard HRTF and inspect or retry retired-bank cleanup
+inzone-profile --personalize-reset
+inzone-profile --personalize-cleanup-status
+inzone-profile --personalize-cleanup
 ```
+
+Import decrypts and validates both files into a private staged bank, atomically
+exchanges the complete bank, and activates the current profile. An activation
+failure triggers restoration of the previous bank and profile state. If the
+asset swap-back itself cannot complete, the unresolved old bank remains protected
+from cleanup and the combined failure is reported. Replaced banks are retired
+until no FIR loader can still hold them; a committed import or reset may therefore
+report cleanup as pending without reverting the committed audio state.
 
 ### 2. Windows INZONE Hub Profile (`SoundProfile.json`)
 Directly import or export profiles configured in Windows INZONE Hub (`%APPDATA%\Sony\INZONE Hub\SoundProfile.json`):
@@ -375,9 +429,30 @@ inzone-profile --windows-list /path/to/SoundProfile.json
 # Import a specific profile to Linux
 inzone-profile --windows-import surround /path/to/SoundProfile.json 1
 
-# Export Linux configuration to a Windows-compatible JSON file
+# Export one Linux profile to a Windows-compatible JSON file
 inzone-profile --windows-export surround exported_profile.json
+
+# Import or export a complete Windows-compatible collection through the CLI
+inzone-profile --windows-import-collection /path/to/SoundProfile.json
+inzone-profile --windows-export-collection exported_collection.json
 ```
+
+The TUI **Import** action appends without confirmation and reports imported and
+skipped counts when the 256-profile limit is reached. **Replace** requires the
+`IMPORT` token, publishes the complete collection atomically, and rejects active
+or automation-referenced profiles that would disappear. Existing Windows objects are retained so
+unknown extension fields can survive a Linux import/export cycle. Import still validates known
+enums, EQ values, profile count, identifiers, names, and file-size limits; it is
+not an unrestricted byte-for-byte identity operation. Windows collection files
+are limited to 16 MiB and 256 entries. Linux-only options that cannot be represented
+without loss cause export to fail instead of being silently dropped.
+
+Acceptance by INZONE Hub and preservation of the Linux routing-template extension
+after Hub loads and saves the file remain `Verification required`. When a unique
+`ProfileID` matches the collection already installed on the same machine, import
+can recover a stripped routing template from that existing record. A cross-machine
+file without the extension falls back to `surround` or `balanced` from its
+Surround flag.
 
 ---
 
@@ -387,19 +462,33 @@ The INZONE H9 II wireless USB transceiver exposes two independent physical PCM p
 - **Game Stream (PCM 1)**: `alsa_output.usb-Sony_INZONE_H9_II-00.stereo-game` (games and primary audio)
 - **Chat Stream (PCM 0)**: `alsa_output.usb-Sony_INZONE_H9_II-00.stereo-chat` (Discord and voice communications)
 
-The driver creates a virtual 7.1-channel surround sink (`inzone.sony-surround`) that receives multi-channel audio, processes it through the DSP pipeline below, and renders binaural stereo to the Game stream:
+The driver creates layout-specific virtual sinks and renders stereo to the Game
+stream. Applications should select the sink matching the stream they produce.
+Each graph declares that exact layout and sets `stream.dont-remix=true` and
+`channelmix.upmix=false`; normal desktop-session negotiation still requires
+environment-specific verification.
+
+| Input layout | Surround enabled | Surround off |
+|---|---|---|
+| 2.0 (`FL FR`) | `inzone.sony-surround.stereo` | `inzone.sony-downmix` |
+| 5.1 (`FL FR FC LFE SL SR`) | `inzone.sony-surround.5.1` | `inzone.sony-downmix.5.1` |
+| 7.1 (`FL FR FC LFE RL RR SL SR`) | `inzone.sony-surround` | `inzone.sony-downmix.7.1` |
+
+The default for a surround-template profile is the 7.1 surround sink. The
+default for other Game-template profiles is the stereo downmix sink. Voice uses
+the physical Chat stream, and Restore returns to the physical Game stream.
 
 ```mermaid
 flowchart TD
     subgraph Input ["Audio Input"]
-        In71["7.1ch Multichannel Stream<br>(FL, FR, FC, LFE, RL, RR, SL, SR)"]
+        InLayout["2.0 / 5.1 / 7.1 stream<br>Exact source channel layout"]
         InChat["Voice Chat Stream<br>(Discord, voice apps)"]
     end
 
-    subgraph PipeWire ["PipeWire Virtual Surround Node (inzone.sony-surround)"]
-        Stage1["1. Sony Spatial Convolution (FIR 512-tap)<br>Binaural 3D soundfield synthesis from official HRTF"]
-        Stage2["2. Model BA Equalization (7-stage IIR Biquad)<br>H9 II hardware acoustic correction (wh_g910n_standard.ba)"]
-        Stage3["3. Internal Spatial ALC (Lookahead Limiter)<br>32-sample lookahead peak limiter and +1.0 dB boost"]
+    subgraph PipeWire ["PipeWire layout-specific virtual sink"]
+        Stage1["Direct 512-tap FIR<br>standard / personal / downmix descriptor"]
+        Stage2["Surround only: 7-stage model BA per ear"]
+        Stage3["Spatial ALC<br>32-sample lookahead and +1.0 dB boost"]
         
         subgraph InlineDSP ["Optional Inline DSP Chain"]
             DSP1["Amp1 (-18 dB attenuation)"]
@@ -419,17 +508,22 @@ flowchart TD
         SinkChat["Chat Stream (PCM 0, Interface 1)<br>16-bit 48kHz Stereo"]
     end
 
-    In71 --> Stage1
+    InLayout --> Stage1
     InlineDSP --> SinkGame
     InChat --> SinkChat
 ```
 
 > **In-Game Audio Configuration**:
-> If a game provides its own headphone spatializer or 3D audio engine, running both can cause phase cancellation and muffled sound. Set your in-game audio output to **7.1 Surround Speakers**.
+> If a game provides its own headphone spatializer or 3D audio engine, running both can cause phase cancellation and muffled sound. Disable that spatializer and select the virtual sink whose 2.0, 5.1, or 7.1 layout matches the game's speaker output.
 
 ---
 
 ## Development & Build Targets
+
+Contributors must follow [AGENTS.md](AGENTS.md). Run project build, test,
+diagnostic, and device commands only in a normal unsandboxed environment; use a
+sandbox only for file editing. The project policy also fixes the firmware boundary
+at installed-version GET support and forbids updater implementation or execution.
 
 Common `make` targets for repository maintenance:
 

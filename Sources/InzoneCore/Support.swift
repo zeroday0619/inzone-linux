@@ -1,6 +1,12 @@
 import Foundation
 import Glibc
 
+@_silgen_name("renameat2")
+private func atomicFileRenameAt2(
+    _ oldDirectory: Int32, _ oldPath: UnsafePointer<CChar>,
+    _ newDirectory: Int32, _ newPath: UnsafePointer<CChar>, _ flags: UInt32
+) -> Int32
+
 public enum InzoneError: Error, LocalizedError, Sendable {
     case message(String)
 
@@ -78,11 +84,12 @@ public enum AtomicFile {
         private let destinationName: String
         private let temporaryName: String
         private let permissions: Int
+        private let replacing: Bool
         private var published = false
 
         fileprivate init(
             directoryDescriptor: Int32, closesDirectoryDescriptor: Bool,
-            destinationName: String, directoryURL: URL?, permissions: Int
+            destinationName: String, directoryURL: URL?, permissions: Int, replacing: Bool
         ) throws {
             try AtomicFile.validate(name: destinationName, permissions: permissions)
             let stagedName = ".\(destinationName).\(UUID().uuidString)"
@@ -98,6 +105,7 @@ public enum AtomicFile {
 
             self.destinationName = destinationName
             self.permissions = permissions
+            self.replacing = replacing
             self.directoryDescriptor = directoryDescriptor
             self.closesDirectoryDescriptor = closesDirectoryDescriptor
             temporaryName = stagedName
@@ -125,9 +133,22 @@ public enum AtomicFile {
             guard Glibc.fstat(descriptor, &descriptorStatus) == 0 else {
                 throw AtomicFile.posixError("Inspect temporary file", path: destinationName)
             }
-            guard Glibc.renameat(
-                directoryDescriptor, temporaryName, directoryDescriptor, destinationName
-            ) == 0 else {
+            let renameResult: Int32
+            if replacing {
+                renameResult = Glibc.renameat(
+                    directoryDescriptor, temporaryName, directoryDescriptor, destinationName
+                )
+            } else {
+                renameResult = temporaryName.withCString { temporaryPath in
+                    destinationName.withCString { destinationPath in
+                        atomicFileRenameAt2(
+                            directoryDescriptor, temporaryPath,
+                            directoryDescriptor, destinationPath, 1
+                        )
+                    }
+                }
+            }
+            guard renameResult == 0 else {
                 throw AtomicFile.posixError("Replace destination file", path: destinationName)
             }
             var destinationStatus = stat()
@@ -141,9 +162,8 @@ public enum AtomicFile {
                 throw InzoneError.message("Published file identity changed for \(destinationName).")
             }
             published = true
-            guard Glibc.fsync(directoryDescriptor) == 0 else {
-                throw AtomicFile.posixError("Synchronize destination directory", path: destinationName)
-            }
+            // The rename is already committed, so directory synchronization cannot be reported as a pre-commit failure.
+            _ = AtomicFile.synchronizeDirectoryAfterCommit(directoryDescriptor)
         }
 
         public func publishAndTakeFileHandle() throws -> FileHandle {
@@ -152,7 +172,9 @@ public enum AtomicFile {
         }
     }
 
-    public static func stage(for destination: URL, permissions: Int = 0o600) throws -> StagedFile {
+    public static func stage(
+        for destination: URL, permissions: Int = 0o600, replacing: Bool = true
+    ) throws -> StagedFile {
         try validate(name: destination.lastPathComponent, permissions: permissions)
         let directory = destination.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -162,26 +184,41 @@ public enum AtomicFile {
         }
         return try StagedFile(
             directoryDescriptor: directoryDescriptor, closesDirectoryDescriptor: true,
-            destinationName: destination.lastPathComponent, directoryURL: directory, permissions: permissions
+            destinationName: destination.lastPathComponent, directoryURL: directory,
+            permissions: permissions, replacing: replacing
         )
     }
 
-    public static func write(_ data: Data, to destination: URL, permissions: Int = 0o600) throws {
-        let stagedFile = try stage(for: destination, permissions: permissions)
+    public static func write(
+        _ data: Data, to destination: URL,
+        permissions: Int = 0o600, replacing: Bool = true
+    ) throws {
+        let stagedFile = try stage(for: destination, permissions: permissions, replacing: replacing)
         try stagedFile.fileHandle.write(contentsOf: data)
         try stagedFile.publish()
     }
 
     public static func write(
         _ data: Data, inDirectoryDescriptor directoryDescriptor: Int32,
-        name: String, permissions: Int = 0o600
+        name: String, permissions: Int = 0o600, replacing: Bool = true
     ) throws {
         let stagedFile = try StagedFile(
             directoryDescriptor: directoryDescriptor, closesDirectoryDescriptor: false,
-            destinationName: name, directoryURL: nil, permissions: permissions
+            destinationName: name, directoryURL: nil,
+            permissions: permissions, replacing: replacing
         )
         try stagedFile.fileHandle.write(contentsOf: data)
         try stagedFile.publish()
+    }
+
+    @discardableResult
+    static func synchronizeDirectoryAfterCommit(
+        _ descriptor: Int32, synchronizer: (Int32) -> Int32 = { Glibc.fsync($0) }
+    ) -> Bool {
+        while synchronizer(descriptor) != 0 {
+            guard errno == EINTR else { return false }
+        }
+        return true
     }
 
     private static func posixError(_ operation: String, path: String) -> InzoneError {

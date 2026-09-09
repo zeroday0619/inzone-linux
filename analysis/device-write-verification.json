@@ -1,6 +1,28 @@
 {
-  "field": "sidetone",
-  "before": 4,
-  "tested": 3,
-  "restored": 4
+  "device": "Sony INZONE H9 II",
+  "firmware": {
+    "dongle": "01.001.000",
+    "headset": "01.001.000"
+  },
+  "verified_at": "2026-09-10",
+  "fields": [
+    { "field": "headphone_volume", "before": 11, "tested": 10, "restored": 11 },
+    { "field": "anc", "before": 1, "tested": 2, "restored": 1 },
+    { "field": "ambient_level", "before": 1, "tested": 2, "restored": 1 },
+    { "field": "voice_focus", "before": 1, "tested": 0, "restored": 1 },
+    { "field": "game_chat", "before": 50, "tested": 60, "restored": 50 },
+    { "field": "sidetone", "before": 10, "tested": 9, "restored": 10 },
+    { "field": "toggle_off", "before": 1, "tested": 0, "restored": 1 },
+    { "field": "toggle_nc", "before": 1, "tested": 0, "restored": 1 },
+    { "field": "toggle_ambient", "before": 1, "tested": 0, "restored": 1 },
+    { "field": "nc_startup", "before": 0, "tested": 1, "restored": 0 },
+    { "field": "bt_startup", "before": 2, "tested": 0, "restored": 2 },
+    { "field": "auto_power", "before": 5, "tested": 15, "restored": 5 },
+    { "field": "language", "before": 1, "tested": 2, "restored": 1 },
+    { "field": "guidance", "before": 1, "tested": 0, "restored": 1 }
+  ],
+  "read_only_status": {
+    "headphone_mute": 0,
+    "headset_microphone_mute": 0
+  }
 }

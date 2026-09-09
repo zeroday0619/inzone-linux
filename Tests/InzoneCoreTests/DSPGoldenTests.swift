@@ -230,6 +230,7 @@ private func dspGoldenToolStandardErrorData(_ error: Error) -> Data {
 }
 
 private final class DSPGoldenLibrary {
+    static let retiredDescriptorCount = 6
     typealias DescriptorFunction = @convention(c) (UInt) -> UnsafePointer<LADSPA_Descriptor>?
     let descriptor: DescriptorFunction
     private let handle: UnsafeMutableRawPointer
@@ -248,8 +249,8 @@ private final class DSPGoldenLibrary {
 
     deinit { dlclose(handle) }
 
-    func metadata() throws -> [DSPGoldenDescriptor] {
-        try (0..<6).map { index in
+    func retiredMetadata() throws -> [DSPGoldenDescriptor] {
+        try (0..<Self.retiredDescriptorCount).map { index in
             guard let pointer = descriptor(UInt(index)) else { throw DSPGoldenError("Descriptor \(index) is missing.") }
             return DSPGoldenDescriptor(pointer.pointee)
         }
@@ -380,9 +381,33 @@ final class DSPGoldenTests: XCTestCase {
         let reference = try fixture()
         XCTAssertEqual(reference.version, 1)
         let library = try DSPGoldenLibrary(path: pluginPath)
-        XCTAssertEqual(try library.metadata(), reference.descriptors)
-        XCTAssertNil(library.descriptor(6))
+        XCTAssertEqual(try library.retiredMetadata(), reference.descriptors)
+        XCTAssertNil(library.descriptor(9))
         XCTAssertNil(library.descriptor(UInt.max))
+    }
+
+    func testFIRDescriptorContractIsSeparateFromRetiredCFixture() throws {
+        let library = try DSPGoldenLibrary(path: pluginPath)
+        let labels = ["inzone_fir_standard", "inzone_fir_personal", "inzone_fir_downmix"]
+        let names = ["INZONE standard 7.1 FIR", "INZONE personalized 7.1 FIR",
+                     "INZONE disabled-surround downmix FIR"]
+        let portNames = ["Input FL", "Input FR", "Input FC", "Input LFE", "Input RL", "Input RR",
+                         "Input SL", "Input SR", "Output L", "Output R", "latency"]
+        for offset in 0..<3 {
+            let pointer = try XCTUnwrap(library.descriptor(UInt(DSPGoldenLibrary.retiredDescriptorCount + offset)))
+            let metadata = DSPGoldenDescriptor(pointer.pointee)
+            XCTAssertEqual(metadata.identifier, UInt(59_876 + offset))
+            XCTAssertEqual(metadata.label, labels[offset])
+            XCTAssertEqual(metadata.name, names[offset])
+            XCTAssertEqual(metadata.maker, "inzone-linux")
+            XCTAssertEqual(metadata.copyright, "Local interoperability implementation")
+            XCTAssertEqual(metadata.properties, Int(LADSPA_PROPERTY_HARD_RT_CAPABLE))
+            XCTAssertEqual(metadata.ports.map(\.name), portNames)
+            XCTAssertEqual(metadata.ports.map(\.descriptor), Array(repeating: 9, count: 8) + [10, 10, 6])
+            XCTAssertEqual(metadata.ports.map(\.hint), Array(repeating: 0, count: 10) + [3])
+            XCTAssertTrue(metadata.ports.allSatisfy { $0.lowerBits == 0 && $0.upperBits == 0 })
+            XCTAssertEqual(metadata.callbacks, ["instantiate", "connect_port", "activate", "run", "cleanup"])
+        }
     }
 
     func testEveryDSPMatchesCReferenceSamplesAndControlTransitions() throws {
@@ -480,14 +505,17 @@ private enum DSPGoldenTool {
                 let instance = try DSPGoldenInstance(library: reference, index: scenario.descriptor)
                 return DSPGoldenCase(scenario: scenario, rendered: try instance.render(scenario))
             }
-            let fixture = DSPGoldenFixture(version: 1, provenance: provenance, descriptors: try reference.metadata(), cases: cases)
+            let fixture = DSPGoldenFixture(version: 1, provenance: provenance,
+                                           descriptors: try reference.retiredMetadata(), cases: cases)
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             try encoder.encode(fixture).write(to: URL(fileURLWithPath: arguments[2]), options: .atomic)
             print("Generated \(cases.count) C-reference scenarios.")
         } else if arguments[0] == "compare" {
             let candidate = try DSPGoldenLibrary(path: arguments[2])
-            guard try reference.metadata() == candidate.metadata() else { throw DSPGoldenError("Descriptor metadata differs.") }
+            guard try reference.retiredMetadata() == candidate.retiredMetadata() else {
+                throw DSPGoldenError("Retired descriptor metadata differs.")
+            }
             var differences = 0
             for scenario in DSPGoldenScenario.all {
                 let expected = try DSPGoldenInstance(library: reference, index: scenario.descriptor).render(scenario)

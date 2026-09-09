@@ -8,7 +8,8 @@ public enum PipeWireDiagnostics {
         let session = try IsolatedPipeWireSession(prefix: "inzone-dsp-test", remote: "inzone-test",
                                                   logURL: analysis.appendingPathComponent("pipewire-impulse.log"))
         defer { session.close() }
-        var graph = try GraphRenderer(paths: InzonePaths()).buildSurround(
+        session.setEnvironment("INZONE_DSP_DATA_DIR", value: repository.path)
+        var graph = try GraphRenderer(paths: InzonePaths(), firDataRoot: repository).buildSurround(
             assets: repository.appendingPathComponent("assets"), plugin: repository.appendingPathComponent("native/inzone_dsp.so"))
         guard var playback = graph["playback.props"] as? [String: Any] else { throw InzoneError.message("Surround playback properties are missing.") }
         playback.removeValue(forKey: "target.object")
@@ -158,6 +159,10 @@ final class IsolatedPipeWireSession {
         // The unique basename and private search path prevent an installed plugin from substituting for the build under test.
         environment["LADSPA_PATH"] = libraryDirectory.path
         return name
+    }
+
+    func setEnvironment(_ name: String, value: String) {
+        environment[name] = value
     }
 
     func close() {

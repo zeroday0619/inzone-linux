@@ -11,11 +11,14 @@ struct InzoneToolsCommand {
 
     fetch               Download, verify, extract, and decode the pinned Sony assets
       --installer FILE --offline --download-only --ilspycmd FILE
+      A custom ilspycmd must be a trusted local ELF64 executable for this host architecture.
     export-filters PAYLOAD DESTINATION
                         Decode a local Sony HKI/BA filter bank
     export-eq           Extract the Sony 10-band equalizer coefficient tables
     export-presets      Extract Sony presets and immersive equalizer sections
       --payload DIRECTORY --decompiled DIRECTORY --output DIRECTORY
+    export-inventory    Inventory non-account managed sources and catalog firmware artifacts
+      --payload DIRECTORY --decompiled DIRECTORY --output FILE
     plugin-digest       Print the built DSP plugin SHA-256 for a bound installation
     udev-rule-digest    Print the udev rule SHA-256 for a bound installation
     disassemble START END [--input FILE]
@@ -84,6 +87,14 @@ struct InzoneToolsCommand {
             }
             let escapedDestination = TerminalOutput.escaped(destination.path, preservingNewlines: false)
             print("Exported \(command == "export-eq" ? "equalizer tables" : "Sony presets") to \(escapedDestination).")
+        case "export-inventory":
+            try options.validate(values: ["repository", "payload", "decompiled", "output"])
+            let output = options.url("output") ?? repository.appendingPathComponent("analysis/reverse-engineering-inventory.json")
+            try AssetExport.reverseEngineeringInventory(
+                payload: payload, decompiled: decompiled,
+                decompilerVersion: AssetFetcher.decompilerVersion, destination: output
+            )
+            print("Exported reverse-engineering inventory to \(TerminalOutput.escaped(output.path, preservingNewlines: false)).")
         case "disassemble":
             try options.validate(values: ["repository", "input"], positionalCount: 2)
             func address(_ text: String) throws -> UInt64 {

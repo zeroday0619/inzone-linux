@@ -1,3 +1,4 @@
+import Dispatch
 import Foundation
 import Glibc
 import XCTest
@@ -57,6 +58,26 @@ final class AutomationTests: XCTestCase {
         XCTAssertTrue(AutomationStore.matching(rules, names: ["aaa"]).isEmpty)
     }
 
+    func testWindowsMatchingNormalizesCaseAndSlashStyleButNativeMatchingRemainsExact() throws {
+        let rules = [
+            AutomationRule(app: #"C:\Games\MATCH.EXE"#, profile: "fps", priority: 2),
+            AutomationRule(app: "NativeGame", profile: "music", priority: 1),
+        ]
+
+        XCTAssertEqual(
+            AutomationStore.matching(rules, names: ["c:/games/match.exe", "nativegame"]).map(\.app),
+            [#"C:\Games\MATCH.EXE"#]
+        )
+        XCTAssertEqual(
+            AutomationStore.matching(rules, names: ["MATCH.EXE", "NativeGame"]).map(\.app),
+            ["NativeGame"]
+        )
+        XCTAssertThrowsError(try AutomationStore.validate([
+            AutomationRule(app: #"C:\Games\MATCH.EXE"#, profile: "fps"),
+            AutomationRule(app: "c:/games/match.exe", profile: "music"),
+        ]))
+    }
+
     func testNativeAndWineIdentityExcludesOtherArguments() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -75,6 +96,7 @@ final class AutomationTests: XCTestCase {
     func testRuleSchemaRejectsInvalidAndAmbiguousValues() throws {
         for text in [
             #"[{"app":"a","profile":"unknown","priority":0}]"#,
+            #"[{"app":"a","profile":"FPS","priority":0}]"#,
             #"[{"app":"a","profile":"music","priority":true}]"#,
             #"[{"app":"a","profile":"music","priority":0.5}]"#,
             #"[{"app":"a","profile":"music","priority":1.0}]"#,
@@ -90,6 +112,24 @@ final class AutomationTests: XCTestCase {
         }
         XCTAssertEqual(try AutomationStore.decode(Data(#"[{"app":"a","profile":"music","priority":1}]"#.utf8)),
                        [AutomationRule(app: "a", profile: "music", priority: 1)])
+    }
+
+    func testPublicDecodeAcceptsAndCanonicalizesCustomUUIDWithoutStorePaths() throws {
+        let uppercase = "AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE"
+        let lowercase = uppercase.lowercased()
+        let data = Data("[{\"app\":\"game\",\"profile\":\"\(uppercase)\",\"priority\":1}]".utf8)
+
+        XCTAssertEqual(
+            try AutomationStore.decode(data),
+            [AutomationRule(app: "game", profile: lowercase, priority: 1)]
+        )
+        XCTAssertEqual(
+            try AutomationStore.validate(
+                [AutomationRule(app: "game", profile: uppercase)],
+                availableProfiles: [lowercase]
+            ).first?.profile,
+            lowercase
+        )
     }
 
     func testStoreEditsPreserveOrderAndPrivateAtomicState() throws {
@@ -115,6 +155,146 @@ final class AutomationTests: XCTestCase {
         XCTAssertFalse(token.isEmpty)
         try store.markManual()
         XCTAssertNotEqual(store.manualToken(), token)
+    }
+
+    func testStoreAcceptsStableCustomProfileIdentifiersAcrossRename() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let paths = InzonePaths(home: directory)
+        let profiles = SoundProfileStore(paths: paths)
+        let base = try SettingsStore(paths: paths).resolvedProfile("balanced")
+        let profile = try profiles.create(name: "Game", basedOn: base)
+        let automation = AutomationStore(paths: paths)
+
+        try automation.edit(app: "game", profile: profile.identifier, priority: 9)
+        try profiles.rename(profile.identifier, to: "Renamed")
+
+        XCTAssertEqual(try automation.load().first?.profile, profile.identifier)
+        XCTAssertTrue(try automation.references(profile: profile.identifier.uppercased()))
+    }
+
+    func testReferencedProfileIdentifiersIncludeRulesAndCrashSafeWatcherOwnership() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = AutomationStore(paths: InzonePaths(home: directory))
+        let baseline = "AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE"
+        let applied = "11111111-2222-4333-8444-555555555555"
+        let pending = "66666666-7777-4888-8999-AAAAAAAAAAAA"
+        try store.save([AutomationRule(app: "game", profile: "fps")])
+        try store.saveOwnership(AutomationOwnership(
+            baseline: baseline, applied: applied, pending: pending, token: "token"
+        ))
+
+        XCTAssertEqual(try store.referencedProfileIdentifiers(), [
+            "fps", baseline.lowercased(), applied.lowercased(), pending.lowercased(),
+        ])
+        XCTAssertTrue(try store.references(profile: baseline.lowercased()))
+        XCTAssertTrue(try store.references(profile: applied.uppercased()))
+
+        try store.saveOwnership(.inactive(token: "token"))
+        XCTAssertEqual(try store.referencedProfileIdentifiers(), ["fps"])
+    }
+
+    func testWatcherResumesAppliedOrPendingOwnershipAndClearsCompletedRestore() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = AutomationStore(paths: InzonePaths(home: directory))
+        let baseline = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+        let applied = "11111111-2222-4333-8444-555555555555"
+        let pending = "66666666-7777-4888-8999-aaaaaaaaaaaa"
+        try store.saveOwnership(AutomationOwnership(
+            baseline: baseline, applied: applied, pending: pending, token: "token"
+        ))
+
+        let resumed = try store.resumedDecision(current: pending.uppercased(), token: "token")
+        XCTAssertEqual(resumed.baseline, baseline)
+        XCTAssertEqual(resumed.applied, pending)
+        XCTAssertEqual(try store.loadOwnership()?.applied, pending)
+        XCTAssertNil(try store.loadOwnership()?.pending)
+
+        try store.saveOwnership(AutomationOwnership(
+            baseline: baseline, applied: applied, pending: baseline, token: "token"
+        ))
+        let restored = try store.resumedDecision(current: baseline.uppercased(), token: "token")
+        XCTAssertEqual(restored.baseline, baseline)
+        XCTAssertNil(restored.applied)
+        XCTAssertNil(try store.loadOwnership())
+    }
+
+    func testWatcherDiscardsOwnershipWhenManualTokenOrActiveProfileChanged() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = AutomationStore(paths: InzonePaths(home: directory))
+        try store.saveOwnership(AutomationOwnership(
+            baseline: "music", applied: "fps", pending: nil, token: "old"
+        ))
+
+        let decision = try store.resumedDecision(current: "balanced", token: "new")
+        XCTAssertEqual(decision.baseline, "balanced")
+        XCTAssertNil(decision.applied)
+        XCTAssertNil(try store.loadOwnership())
+    }
+
+    func testUnchangedWatcherOwnershipDoesNotReplaceTheStateFile() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = AutomationStore(paths: InzonePaths(home: directory))
+        let applied = "AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE"
+        let ownership = AutomationOwnership(
+            baseline: "music", applied: applied, pending: nil, token: "token"
+        )
+        try store.saveOwnership(ownership)
+        let beforeAttributes = try FileManager.default.attributesOfItem(atPath: store.ownershipURL.path)
+        let before = beforeAttributes[.systemFileNumber] as? NSNumber
+
+        try store.saveOwnership(ownership)
+        let unchangedAttributes = try FileManager.default.attributesOfItem(atPath: store.ownershipURL.path)
+        let unchanged = unchangedAttributes[.systemFileNumber] as? NSNumber
+        XCTAssertEqual(unchanged, before)
+
+        try store.saveOwnership(AutomationOwnership(
+            baseline: "music", applied: "fps", pending: nil, token: "token"
+        ))
+        let changedAttributes = try FileManager.default.attributesOfItem(atPath: store.ownershipURL.path)
+        let changed = changedAttributes[.systemFileNumber] as? NSNumber
+        XCTAssertNotEqual(changed, before)
+    }
+
+    func testEditCanRemoveAStaleRuleAfterItsProfileDisappears() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = AutomationStore(paths: InzonePaths(home: directory))
+        try FileManager.default.createDirectory(at: store.fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data(#"[{"app":"game","profile":"00000000-0000-0000-0000-000000000001","priority":0}]"#.utf8)
+            .write(to: store.fileURL)
+
+        XCTAssertThrowsError(try store.load())
+        try store.edit(app: "game", profile: nil)
+        XCTAssertTrue(try store.load().isEmpty)
+    }
+
+    func testRuleEditUsesTheProfileSwitchTransactionLock() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let paths = InzonePaths(home: directory)
+        let store = AutomationStore(paths: paths)
+        var switchLock: FileLock? = try FileLock(
+            url: paths.configDirectory.appendingPathComponent("switch.lock"), nonblocking: false
+        )
+        let started = DispatchSemaphore(value: 0)
+        let finished = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            started.signal()
+            try? store.edit(app: "game", profile: "fps")
+            finished.signal()
+        }
+
+        XCTAssertEqual(started.wait(timeout: .now() + 1), .success)
+        XCTAssertEqual(finished.wait(timeout: .now() + 0.05), .timedOut)
+        switchLock = nil
+        XCTAssertNil(switchLock)
+        XCTAssertEqual(finished.wait(timeout: .now() + 1), .success)
+        XCTAssertEqual(try store.load().first?.profile, "fps")
     }
 
     func testServiceActionsUseOnlyExpectedSystemdUnit() throws {

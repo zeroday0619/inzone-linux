@@ -1,36 +1,65 @@
 import Foundation
 
 public struct GraphRenderer: Sendable {
+    public enum InputChannelLayout: String, CaseIterable, Sendable {
+        case stereo
+        case fivePointOne
+        case sevenPointOne
+
+        public var channels: [String] {
+            switch self {
+            case .stereo: return ["FL", "FR"]
+            case .fivePointOne: return GraphRenderer.fivePointOneChannels
+            case .sevenPointOne: return GraphRenderer.channels
+            }
+        }
+    }
+
     public static let game = "alsa_output.usb-Sony_INZONE_H9_II-00.stereo-game"
     public static let sink = "inzone.sony-surround"
+    public static let downmixSink = "inzone.sony-downmix"
+    public static let surroundStereoSink = "inzone.sony-surround.stereo"
+    public static let surroundFivePointOneSink = "inzone.sony-surround.5.1"
+    public static let downmixFivePointOneSink = "inzone.sony-downmix.5.1"
+    public static let downmixSevenPointOneSink = "inzone.sony-downmix.7.1"
     public static let channels = ["FL", "FR", "FC", "LFE", "RL", "RR", "SL", "SR"]
+    public static let fivePointOneChannels = ["FL", "FR", "FC", "LFE", "SL", "SR"]
     // The original Sony amplifier uses Float-rounded gains instead of Double pow results.
     public static let attenuate: Double = 0x1.01d3f4p-3
     public static let recover: Double = 0x1.fc5ebcp+2
     public let paths: InzonePaths
+    public let firDataRoot: URL
 
-    public init(paths: InzonePaths) { self.paths = paths }
+    public init(paths: InzonePaths, firDataRoot: URL? = nil) {
+        self.paths = paths
+        self.firDataRoot = (firDataRoot ?? paths.shareDirectory).standardizedFileURL.resolvingSymlinksInPath()
+    }
 
-    public func render(profile: String, template: String) throws -> String {
-        guard SettingsStore.profiles.contains(profile) else { return template }
-        let options = try SettingsStore(paths: paths).options(profile)
+    public func render(
+        profile: String, template: String, includeVirtualSinks: Bool = true
+    ) throws -> String {
+        guard let resolved = try SettingsStore(paths: paths).profileIfAvailable(profile) else { return template }
+        let options = resolved.options
         let text = template.components(separatedBy: .newlines).filter {
             !$0.trimmingCharacters(in: .whitespaces).hasPrefix("#")
         }.joined(separator: "\n")
         guard var config = try JSONSupport.decode(Data(text.utf8)) as? [String: Any] else {
             throw InzoneError.message("Profile configuration must be a JSON object")
         }
-        if profile == "surround" {
+        if includeVirtualSinks, resolved.isSurround {
             let assets = options.hrtf == "personal" ? paths.shareDirectory.appendingPathComponent("personal") : paths.assetsDirectory
             guard isFile(assets.appendingPathComponent("manifest.json")) else {
                 throw InzoneError.message("Import HRTF filters before activating surround")
             }
-            let graph = try buildSurround(assets: assets, plugin: paths.pluginURL)
-            config["wireplumber.profiles"] = ["main": ["node.software-dsp": "required"]]
-            config["node.software-dsp.rules"] = [[
-                "matches": [["node.name": Self.game]],
-                "actions": ["create-filter": ["filter-graph": try JSONSupport.encode(graph, pretty: false), "hide-parent": false]],
-            ]]
+            let graphs = try InputChannelLayout.allCases.map {
+                try buildSurround(assets: assets, plugin: paths.pluginURL, layout: $0)
+            }
+            try installSoftwareDSP(graphs, in: &config)
+        } else if includeVirtualSinks, !resolved.isVoice {
+            let graphs = try InputChannelLayout.allCases.map {
+                try buildDownmix(assets: paths.assetsDirectory, plugin: paths.pluginURL, layout: $0)
+            }
+            try installSoftwareDSP(graphs, in: &config)
         }
         let plugin = try daemonPlugin()
         var rules: [[String: Any]] = []
@@ -40,7 +69,7 @@ public struct GraphRenderer: Sendable {
             }
             rules = existingRules
         }
-        let target = profile == "voice" ? "alsa_output.usb-Sony_INZONE_H9_II-00.stereo-chat" : Self.game
+        let target = resolved.isVoice ? "alsa_output.usb-Sony_INZONE_H9_II-00.stereo-chat" : Self.game
         for index in rules.indices {
             var matches = try ruleMatches(rules[index])
             for matchIndex in matches.indices where (matches[matchIndex]["node.name"] as? String ?? "").contains("alsa_output") {
@@ -100,7 +129,76 @@ public struct GraphRenderer: Sendable {
         return "# INZONE profile: \(profile)\n" + (try JSONSupport.encode(config)) + "\n"
     }
 
-    public func buildSurround(assets: URL, plugin: URL, drc: Int = 0) throws -> [String: Any] {
+    public func buildDownmix(
+        assets: URL, plugin: URL, layout: InputChannelLayout = .sevenPointOne
+    ) throws -> [String: Any] {
+        let assets = assets.standardizedFileURL.resolvingSymlinksInPath()
+        let plugin = plugin.standardizedFileURL.resolvingSymlinksInPath()
+        let expectedAssets = firDataRoot.appendingPathComponent("assets", isDirectory: true)
+            .standardizedFileURL.resolvingSymlinksInPath()
+        guard assets.path == expectedAssets.path else {
+            throw InzoneError.message("Downmix validation and FIR runtime must use the same data root")
+        }
+        guard isFile(plugin) else {
+            throw InzoneError.message("Build the native INZONE DSP plugin before generating the graph")
+        }
+        let manifestData = try Data(contentsOf: assets.appendingPathComponent("manifest.json"))
+        guard let manifest = try JSONSupport.decode(manifestData) as? [String: Any],
+              (manifest["rate"] as? Int) == 48000, (manifest["taps"] as? Int) == 512 else {
+            throw InzoneError.message("Downmix assets must use 48000 Hz and 512 taps")
+        }
+        let expectedChannels = Dictionary(uniqueKeysWithValues: FilterBank.channels.map {
+            ($0.name, [$0.azimuth, $0.polar])
+        })
+        guard let channels = manifest["downmix_channels"] as? [String: [Int]],
+              channels == expectedChannels else {
+            throw InzoneError.message("Downmix manifest does not contain the required 7.1 channels")
+        }
+        let downmixAssets = assets.appendingPathComponent("downmix", isDirectory: true)
+        for channel in Self.channels where !isFile(downmixAssets.appendingPathComponent(channel + ".wav")) {
+            throw InzoneError.message("Missing downmix channel: \(channel)")
+        }
+
+        let nodes: [[String: Any]] = [
+            firNode(name: "fir", label: "inzone_fir_downmix", plugin: plugin.path),
+            [
+                "type": "ladspa", "name": "spatial_alc", "plugin": plugin.path,
+                "label": "inzone_spatial_alc", "control": ["Boost": 1],
+            ],
+        ]
+        let links = [
+            link("fir:Output L", "spatial_alc:Input L"),
+            link("fir:Output R", "spatial_alc:Input R"),
+        ]
+        return [
+            "node.description": "INZONE H9 II - Sony Downmix", "audio.rate": 48000,
+            "filter.graph": [
+                "nodes": nodes, "links": links,
+                "inputs": firInputs(name: "fir", layout: layout),
+                "outputs": ["spatial_alc:Output L", "spatial_alc:Output R"],
+            ],
+            "capture.props": [
+                "node.name": sinkName(surround: false, layout: layout),
+                "node.description": "INZONE H9 II - Sony Downmix " + layoutDescription(layout),
+                "media.class": "Audio/Sink", "audio.channels": layout.channels.count,
+                "audio.position": layout.channels,
+                "node.latency": "32/48000", "node.rate": "1/48000", "priority.session": 1500,
+                "stream.dont-remix": true, "channelmix.upmix": false,
+            ],
+            "playback.props": [
+                "node.name": outputName(surround: false, layout: layout),
+                "node.description": "Sony Downmix to INZONE Game " + layoutDescription(layout),
+                "audio.channels": 2, "audio.position": ["FL", "FR"], "node.passive": true,
+                "target.object": Self.game, "node.dont-fallback": true, "node.dont-reconnect": false,
+                "node.linger": true, "stream.dont-remix": true,
+            ],
+        ]
+    }
+
+    public func buildSurround(
+        assets: URL, plugin: URL, drc: Int = 0,
+        layout: InputChannelLayout = .sevenPointOne
+    ) throws -> [String: Any] {
         let assets = assets.standardizedFileURL.resolvingSymlinksInPath()
         let plugin = plugin.standardizedFileURL.resolvingSymlinksInPath()
         guard isFile(plugin) else { throw InzoneError.message("Build the native INZONE DSP plugin before generating the graph") }
@@ -109,6 +207,19 @@ public struct GraphRenderer: Sendable {
         guard let manifest = try JSONSupport.decode(manifestData) as? [String: Any],
               (manifest["rate"] as? Int) == 48000, (manifest["taps"] as? Int) == 512 else {
             throw InzoneError.message("HRTF assets must use 48000 Hz and 512 taps")
+        }
+        let firLabel: String
+        switch manifest["kind"] as? String {
+        case "personal": firLabel = "inzone_fir_personal"
+        case nil: firLabel = "inzone_fir_standard"
+        default: throw InzoneError.message("Unsupported HRTF asset kind")
+        }
+        let expectedAssets = (firLabel == "inzone_fir_personal"
+            ? firDataRoot.appendingPathComponent("personal", isDirectory: true)
+            : firDataRoot.appendingPathComponent("assets", isDirectory: true))
+            .standardizedFileURL.resolvingSymlinksInPath()
+        guard assets.path == expectedAssets.path else {
+            throw InzoneError.message("HRTF validation and FIR runtime must use the same data root")
         }
         if let rawChannels = manifest["channels"] {
             guard let channels = rawChannels as? [String: Any], Set(channels.keys) == Set(Self.channels) else {
@@ -120,23 +231,10 @@ public struct GraphRenderer: Sendable {
         }
         let coefficientData = try Data(contentsOf: assets.appendingPathComponent("h9-ii-biquads.json"))
         let coefficients = try coefficientRows(JSONSupport.decode(coefficientData), count: 7)
-        var nodes: [[String: Any]] = []
+        var nodes: [[String: Any]] = [firNode(name: "fir", label: firLabel, plugin: plugin.path)]
         var links: [[String: Any]] = []
-        for (index, channel) in Self.channels.enumerated() {
-            nodes.append(["type": "builtin", "name": "copy" + channel, "label": "copy"])
-            for ear in 0..<2 {
-                let name = "conv\(channel)_\(ear)"
-                nodes.append([
-                    "type": "builtin", "name": name, "label": "convolver",
-                    "config": ["filename": assets.appendingPathComponent(channel + ".wav").path, "channel": ear, "blocksize": 128],
-                ])
-                links.append(link("copy\(channel):Out", name + ":In"))
-                links.append(link(name + ":Out", "mix\(ear):In \(index + 1)"))
-            }
-        }
         for ear in 0..<2 {
-            nodes.append(["type": "builtin", "name": "mix\(ear)", "label": "mixer"])
-            var previous = "mix\(ear):Out"
+            var previous = "fir:Output " + (ear == 0 ? "L" : "R")
             for (index, row) in coefficients.enumerated() {
                 let name = "eq\(ear)_\(index)"
                 nodes.append(biquad(name: name, plugin: plugin.path, label: "inzone_biquad", row: row))
@@ -150,19 +248,64 @@ public struct GraphRenderer: Sendable {
         for ear in ["L", "R"] { links.append(link("spatial_alc:Output " + ear, "drc:Input " + ear)) }
         return [
             "node.description": "INZONE H9 II - Sony Surround (experimental)", "audio.rate": 48000,
-            "filter.graph": ["nodes": nodes, "links": links, "inputs": Self.channels.map { "copy" + $0 + ":In" }, "outputs": ["drc:Output L", "drc:Output R"]],
+            "filter.graph": ["nodes": nodes, "links": links, "inputs": firInputs(name: "fir", layout: layout), "outputs": ["drc:Output L", "drc:Output R"]],
             "capture.props": [
-                "node.name": Self.sink, "node.description": "INZONE H9 II - Sony Surround (experimental)",
-                "media.class": "Audio/Sink", "audio.channels": 8, "audio.position": Self.channels,
-                "node.latency": "256/48000", "node.rate": "1/48000", "priority.session": 1500,
+                "node.name": sinkName(surround: true, layout: layout),
+                "node.description": "INZONE H9 II - Sony Surround " + layoutDescription(layout),
+                "media.class": "Audio/Sink", "audio.channels": layout.channels.count,
+                "audio.position": layout.channels,
+                "node.latency": "32/48000", "node.rate": "1/48000", "priority.session": 1500,
                 "stream.dont-remix": true, "channelmix.upmix": false,
             ],
             "playback.props": [
-                "node.name": "inzone.sony-surround.output", "node.description": "Sony HRTF to INZONE Game",
+                "node.name": outputName(surround: true, layout: layout),
+                "node.description": "Sony HRTF to INZONE Game " + layoutDescription(layout),
                 "audio.channels": 2, "audio.position": ["FL", "FR"], "node.passive": true,
-                "target.object": Self.game, "node.dont-fallback": true, "node.dont-reconnect": true, "stream.dont-remix": true,
+                "target.object": Self.game, "node.dont-fallback": true, "node.dont-reconnect": false,
+                "node.linger": true, "stream.dont-remix": true,
             ],
         ]
+    }
+
+    private func installSoftwareDSP(_ graphs: [[String: Any]], in config: inout [String: Any]) throws {
+        var modules = config["context.modules"] as? [[String: Any]] ?? []
+        modules.append(contentsOf: graphs.map {
+            ["name": "libpipewire-module-filter-chain", "flags": ["nofail"], "args": $0]
+        })
+        config["context.modules"] = modules
+        config.removeValue(forKey: "node.software-dsp.rules")
+        config.removeValue(forKey: "wireplumber.profiles")
+    }
+
+    private func firNode(name: String, label: String, plugin: String) -> [String: Any] {
+        ["type": "ladspa", "name": name, "plugin": plugin, "label": label]
+    }
+
+    private func firInputs(name: String, layout: InputChannelLayout) -> [String] {
+        layout.channels.map { name + ":Input " + $0 }
+    }
+
+    private func sinkName(surround: Bool, layout: InputChannelLayout) -> String {
+        switch (surround, layout) {
+        case (true, .stereo): return Self.surroundStereoSink
+        case (true, .fivePointOne): return Self.surroundFivePointOneSink
+        case (true, .sevenPointOne): return Self.sink
+        case (false, .stereo): return Self.downmixSink
+        case (false, .fivePointOne): return Self.downmixFivePointOneSink
+        case (false, .sevenPointOne): return Self.downmixSevenPointOneSink
+        }
+    }
+
+    private func outputName(surround: Bool, layout: InputChannelLayout) -> String {
+        sinkName(surround: surround, layout: layout) + ".output"
+    }
+
+    private func layoutDescription(_ layout: InputChannelLayout) -> String {
+        switch layout {
+        case .stereo: return "Stereo"
+        case .fivePointOne: return "5.1"
+        case .sevenPointOne: return "7.1"
+        }
     }
 
     private func daemonPlugin() throws -> String {

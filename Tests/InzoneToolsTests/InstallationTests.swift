@@ -66,7 +66,7 @@ final class InstallationTests: XCTestCase {
         for path in [
             "native/inzone_dsp.so", "assets/sony-eq-tables.json", "assets/sony-presets.json",
             "analysis/payload/inzonevirtualizer.dll", "analysis/payload/shp_for_game_v2.0_512tap.hki",
-            "analysis/payload/wh_g910n_standard.ba",
+            "analysis/payload/downmix.hki", "analysis/payload/wh_g910n_standard.ba",
         ] where !FileManager.default.fileExists(atPath: root.appendingPathComponent(path).path) {
             throw XCTSkip("Prepare native DSP and pinned installer assets with make build; missing \(path).")
         }
@@ -98,10 +98,13 @@ final class InstallationTests: XCTestCase {
     }
 
     private func installUser(_ fixture: Fixture) throws {
-        try Installer(options: InstallOptions(
-            repository: root, home: fixture.home, binary: fixture.binary,
-            expectedPluginSHA256: try pluginDigest()
-        )).run()
+        try Installer(
+            options: InstallOptions(
+                repository: root, home: fixture.home, binary: fixture.binary,
+                expectedPluginSHA256: try pluginDigest()
+            ),
+            effectiveUserIDProvider: { Glibc.geteuid() }, runtimeHomeProvider: { fixture.home }
+        ).run()
     }
 
     private func installSystem(_ fixture: Fixture, staging: URL? = nil) throws {
@@ -119,6 +122,19 @@ final class InstallationTests: XCTestCase {
     private func write(_ text: String, to file: URL) throws {
         try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
         try Data(text.utf8).write(to: file)
+    }
+
+    private func profileConfiguration(_ file: URL) throws -> (header: String, config: [String: Any]) {
+        let text = try String(contentsOf: file, encoding: .utf8)
+        let lines = text.components(separatedBy: .newlines)
+        let json = lines.filter { !$0.hasPrefix("#") }.joined(separator: "\n")
+        return (lines.first ?? "", try XCTUnwrap(JSONSupport.decode(Data(json.utf8)) as? [String: Any]))
+    }
+
+    private func softwareDSPGraph(_ config: [String: Any]) throws -> [String: Any] {
+        let modules = try XCTUnwrap(config["context.modules"] as? [[String: Any]])
+        let filter = try XCTUnwrap(modules.first { $0["name"] as? String == "libpipewire-module-filter-chain" })
+        return try XCTUnwrap(filter["args"] as? [String: Any])
     }
 
     private func pluginDigest() throws -> String {
@@ -173,6 +189,64 @@ final class InstallationTests: XCTestCase {
                 XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: fixture.home.path), ["settings.json"])
                 XCTAssertEqual(try String(contentsOf: sentinel, encoding: .utf8), "preserved\n")
                 XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.staging.appendingPathComponent("usr").path))
+            }
+        }
+    }
+
+    func testPEAndFirmwareUpdaterBinariesCannotBeInstalled() throws {
+        try fixture { fixture in
+            let sentinel = fixture.home.appendingPathComponent("settings.json")
+            try write("preserved\n", to: sentinel)
+
+            let portableExecutable = fixture.directory.appendingPathComponent("ordinary-tool")
+            try Data([0x4d, 0x5a] + Array(repeating: 0, count: 62)).write(to: portableExecutable)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: portableExecutable.path)
+
+            let updater = fixture.directory.appendingPathComponent("glhubupdatetoolcli.exe")
+            guard let nativeExecutable = ["/usr/bin/printf", "/bin/printf"].first(where: {
+                FileManager.default.isExecutableFile(atPath: $0)
+            }) else {
+                throw XCTSkip("The installation fixture requires a native executable for this host.")
+            }
+            try FileManager.default.copyItem(at: URL(fileURLWithPath: nativeExecutable), to: updater)
+
+            let wrongArchitecture = fixture.directory.appendingPathComponent("wrong-architecture")
+            var wrongArchitectureData = try Data(contentsOf: URL(fileURLWithPath: nativeExecutable))
+            #if arch(x86_64)
+            wrongArchitectureData[18] = 0xb7
+            wrongArchitectureData[19] = 0
+            #elseif arch(arm64)
+            wrongArchitectureData[18] = 0x3e
+            wrongArchitectureData[19] = 0
+            #endif
+            try wrongArchitectureData.write(to: wrongArchitecture)
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o755], ofItemAtPath: wrongArchitecture.path
+            )
+
+            for (candidate, errorFragment) in [
+                (portableExecutable, "cannot be installed"),
+                (updater, "cannot be installed"),
+                (wrongArchitecture, "native ELF64 executable for this host architecture"),
+            ] {
+                let installer = Installer(
+                    options: InstallOptions(
+                        repository: root, home: fixture.home, binary: candidate,
+                        expectedPluginSHA256: String(repeating: "0", count: 64)
+                    ),
+                    effectiveUserIDProvider: { Glibc.geteuid() }, runtimeHomeProvider: { fixture.home }
+                )
+                XCTAssertThrowsError(try installer.run()) { error in
+                    XCTAssertTrue(
+                        error.localizedDescription.contains(errorFragment),
+                        error.localizedDescription
+                    )
+                }
+                XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: fixture.home.path), ["settings.json"])
+                XCTAssertEqual(try String(contentsOf: sentinel, encoding: .utf8), "preserved\n")
+                XCTAssertFalse(FileManager.default.fileExists(
+                    atPath: fixture.home.appendingPathComponent(".local/bin/inzone-profile").path
+                ))
             }
         }
     }
@@ -280,7 +354,8 @@ final class InstallationTests: XCTestCase {
                     repository: root, home: fixture.home, binary: fixture.binary,
                     expectedPluginSHA256: String(repeating: "0", count: 64)
                 ),
-                effectiveUserIDProvider: { userCredential.read() }
+                effectiveUserIDProvider: { userCredential.read() },
+                runtimeHomeProvider: { fixture.home }
             )
             XCTAssertEqual(userCredential.callCount, 0)
             XCTAssertThrowsError(try userInstaller.run()) { error in
@@ -508,10 +583,13 @@ final class InstallationTests: XCTestCase {
 
             for expectedDigest in [String(repeating: "0", count: 64), preparedDigest] {
                 if expectedDigest == preparedDigest { try write("mutated plugin", to: native) }
-                let installer = Installer(options: InstallOptions(
-                    repository: repository, home: fixture.home, binary: fixture.binary,
-                    expectedPluginSHA256: expectedDigest
-                ))
+                let installer = Installer(
+                    options: InstallOptions(
+                        repository: repository, home: fixture.home, binary: fixture.binary,
+                        expectedPluginSHA256: expectedDigest
+                    ),
+                    effectiveUserIDProvider: { Glibc.geteuid() }, runtimeHomeProvider: { fixture.home }
+                )
                 XCTAssertThrowsError(try installer.run()) { error in
                     XCTAssertTrue(error.localizedDescription.contains("changed after installation preparation"), error.localizedDescription)
                 }
@@ -686,7 +764,12 @@ final class InstallationTests: XCTestCase {
                     "install", "--repository", root.path, "--home", unsafeHome.path,
                     "--binary", fixture.binary.path, "--expected-plugin-sha256", try pluginDigest(),
                 ],
-                currentDirectory: fixture.directory
+                currentDirectory: fixture.directory,
+                environment: [
+                    "HOME": unsafeHome.path,
+                    "PATH": ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin",
+                    "LANG": "C.UTF-8",
+                ]
             )
             let escapedHome = TerminalOutput.escaped(unsafeHome.path, preservingNewlines: false)
             XCTAssertEqual(result.status, 0, result.output)
@@ -883,11 +966,18 @@ final class InstallationTests: XCTestCase {
             for (source, destination) in mappings {
                 XCTAssertEqual(try Data(contentsOf: destination), try Data(contentsOf: root.appendingPathComponent("configs/\(source)")))
             }
-            XCTAssertEqual(try Data(contentsOf: fixture.home.appendingPathComponent(".config/wireplumber/wireplumber.conf.d/51-inzone-h9-ii.conf")), try Data(contentsOf: data.appendingPathComponent("balanced.conf")))
+            let active = try profileConfiguration(fixture.home.appendingPathComponent(
+                ".config/wireplumber/wireplumber.conf.d/51-inzone-h9-ii.conf"
+            ))
+            XCTAssertEqual(active.header, "# INZONE profile: balanced")
+            let activeGraph = try softwareDSPGraph(active.config)
+            let activeNodes = try XCTUnwrap((activeGraph["filter.graph"] as? [String: Any])?["nodes"] as? [[String: Any]])
+            XCTAssertTrue(activeNodes.contains { $0["label"] as? String == "inzone_fir_downmix" })
             let graph = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: data.appendingPathComponent("sony-surround.json"))) as? [String: Any])
             XCTAssertEqual((graph["capture.props"] as? [String: Any])?["audio.channels"] as? Int, 8)
             let surround = try String(contentsOf: data.appendingPathComponent("surround.conf"), encoding: .utf8)
-            XCTAssertTrue(surround.contains("node.software-dsp.rules"))
+            XCTAssertFalse(surround.contains("node.software-dsp.rules"))
+            XCTAssertFalse(surround.contains("context.modules"))
             let plugin = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: assets.appendingPathComponent("plugin.json"))) as? [String: String])
             let pluginName = try XCTUnwrap(plugin["name"])
             let native = try Data(contentsOf: root.appendingPathComponent("native/inzone_dsp.so"))
@@ -925,11 +1015,19 @@ final class InstallationTests: XCTestCase {
             let previousBinary = try Data(contentsOf: executable)
             let previousProfile = try Data(contentsOf: active)
             let payload = fixture.directory.appendingPathComponent("invalid payload")
-            for name in ["inzonevirtualizer.dll", "shp_for_game_v2.0_512tap.hki", "wh_g910n_standard.ba"] {
+            for name in [
+                "inzonevirtualizer.dll", "shp_for_game_v2.0_512tap.hki",
+                "downmix.hki", "wh_g910n_standard.ba",
+            ] {
                 try write("unrecognized vendor file", to: payload.appendingPathComponent(name))
             }
-            let installer = Installer(options: InstallOptions(repository: root, home: fixture.home, binary: fixture.binary,
-                                                              payload: payload, expectedPluginSHA256: try pluginDigest()))
+            let installer = Installer(
+                options: InstallOptions(
+                    repository: root, home: fixture.home, binary: fixture.binary,
+                    payload: payload, expectedPluginSHA256: try pluginDigest()
+                ),
+                effectiveUserIDProvider: { Glibc.geteuid() }, runtimeHomeProvider: { fixture.home }
+            )
             XCTAssertThrowsError(try installer.run()) { error in
                 XCTAssertTrue(error.localizedDescription.contains("Unsupported DLL"), error.localizedDescription)
             }
@@ -962,11 +1060,14 @@ final class InstallationTests: XCTestCase {
                 ".config/inzone-h9-ii/original.conf": "saved restore profile\n",
                 ".config/inzone-h9-ii/profile-settings.json": "{\"music\":{\"drc\":2}}\n",
                 ".config/inzone-h9-ii/auto-profiles.json": "{\"enabled\":false,\"bindings\":[]}\n",
-                ".config/wireplumber/wireplumber.conf.d/51-inzone-h9-ii.conf": "# INZONE profile: music\n{}\n",
                 ".local/share/inzone-linux/python/inzone-profile.py": "legacy source\n",
                 ".local/share/inzone-linux/venv/bin/python": "legacy interpreter\n",
             ]
             for (path, contents) in preserved { try write(contents, to: fixture.home.appendingPathComponent(path)) }
+            let active = fixture.home.appendingPathComponent(
+                ".config/wireplumber/wireplumber.conf.d/51-inzone-h9-ii.conf"
+            )
+            try write("# INZONE profile: music\n{}\n", to: active)
             let launcher = "#!/bin/sh\nexec /previous/venv/bin/python /previous/inzone-profile.py \"$@\"\n"
             try write(launcher, to: fixture.home.appendingPathComponent(".local/bin/inzone-profile"))
             for name in ["fps", "music", "voice", "balanced"] {
@@ -979,12 +1080,173 @@ final class InstallationTests: XCTestCase {
             for name in ["fps", "music", "voice", "balanced"] {
                 XCTAssertEqual(try Data(contentsOf: data.appendingPathComponent("\(name).conf")), try Data(contentsOf: root.appendingPathComponent("configs/\(name).conf")))
             }
+            let refreshed = try profileConfiguration(active)
+            XCTAssertEqual(refreshed.header, "# INZONE profile: music")
+            let graph = try softwareDSPGraph(refreshed.config)
+            let nodes = try XCTUnwrap((graph["filter.graph"] as? [String: Any])?["nodes"] as? [[String: Any]])
+            XCTAssertTrue(nodes.contains { $0["label"] as? String == "inzone_fir_downmix" })
             let backups = try FileManager.default.contentsOfDirectory(at: fixture.home.appendingPathComponent(".local/state/inzone-linux/backups"), includingPropertiesForKeys: nil)
             XCTAssertEqual(backups.count, 1)
             let backup = try XCTUnwrap(backups.first)
             XCTAssertEqual(try String(contentsOf: backup.appendingPathComponent(".local/bin/inzone-profile"), encoding: .utf8), launcher)
             XCTAssertEqual(try String(contentsOf: backup.appendingPathComponent(".config/inzone-h9-ii/fps.conf"), encoding: .utf8), "old fps profile\n")
             XCTAssertEqual(try Data(contentsOf: fixture.home.appendingPathComponent(".local/bin/inzone-profile")), try Data(contentsOf: fixture.binary))
+        }
+    }
+
+    func testReinstallRefreshesCustomActiveProfileWithoutChangingCollection() throws {
+        try requireAssets()
+        try fixture { fixture in
+            try installFixtureExecutable(fixture)
+            try install(fixture)
+            let paths = InzonePaths(home: fixture.home)
+            let custom = try ProfileController(paths: paths).createProfile(
+                name: "Custom Music", basedOn: "music"
+            )
+            let collection = paths.configDirectory.appendingPathComponent("sound-profiles.json")
+            let previousCollection = try Data(contentsOf: collection)
+            try write("# INZONE profile: \(custom.identifier)\n{}\n", to: paths.activeProfile)
+
+            try install(fixture)
+
+            XCTAssertEqual(try Data(contentsOf: collection), previousCollection)
+            let refreshed = try profileConfiguration(paths.activeProfile)
+            XCTAssertEqual(refreshed.header, "# INZONE profile: \(custom.identifier)")
+            let graph = try softwareDSPGraph(refreshed.config)
+            let nodes = try XCTUnwrap((graph["filter.graph"] as? [String: Any])?["nodes"] as? [[String: Any]])
+            XCTAssertTrue(nodes.contains { $0["label"] as? String == "inzone_fir_downmix" })
+        }
+    }
+
+    func testReinstallPreservesOriginalActiveConfiguration() throws {
+        try requireAssets()
+        try fixture { fixture in
+            try installFixtureExecutable(fixture)
+            try install(fixture)
+            let paths = InzonePaths(home: fixture.home)
+            let original = "{\"user-owned\":true}\n"
+            try write(original, to: paths.configDirectory.appendingPathComponent("original.conf"))
+            try write(original, to: paths.activeProfile)
+
+            try install(fixture)
+
+            XCTAssertEqual(try String(contentsOf: paths.activeProfile, encoding: .utf8), original)
+            XCTAssertEqual(
+                try String(contentsOf: paths.configDirectory.appendingPathComponent("original.conf"), encoding: .utf8),
+                original
+            )
+        }
+    }
+
+    func testReinstallAtomicallyExchangesAssetBankForHeldDirectoryReaders() throws {
+        try requireAssets()
+        try fixture { fixture in
+            try installFixtureExecutable(fixture)
+            try install(fixture)
+            let assets = InzonePaths(home: fixture.home).assetsDirectory
+            let oldManifest = assets.appendingPathComponent("manifest.json")
+            let oldManifestIdentifier = try FileManager.default.attributesOfItem(atPath: oldManifest.path)[.systemFileNumber]
+                as? NSNumber
+            let descriptor = Glibc.open(assets.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+            XCTAssertGreaterThanOrEqual(descriptor, 0)
+            defer { if descriptor >= 0 { Glibc.close(descriptor) } }
+
+            try install(fixture)
+
+            let heldManifest = Glibc.openat(descriptor, "manifest.json", O_RDONLY | O_CLOEXEC)
+            XCTAssertGreaterThanOrEqual(heldManifest, 0)
+            defer { if heldManifest >= 0 { Glibc.close(heldManifest) } }
+            var heldStatus = stat()
+            XCTAssertEqual(Glibc.fstat(heldManifest, &heldStatus), 0)
+            XCTAssertEqual(NSNumber(value: heldStatus.st_ino), oldManifestIdentifier)
+            let newManifestIdentifier = try FileManager.default.attributesOfItem(atPath: oldManifest.path)[.systemFileNumber]
+                as? NSNumber
+            XCTAssertNotEqual(newManifestIdentifier, oldManifestIdentifier)
+            for path in GraphRenderer.channels.map({ $0 + ".wav" })
+                + GraphRenderer.channels.map({ "downmix/" + $0 + ".wav" })
+                + [
+                    "fir-bank.bin", "downmix/fir-bank.bin", "manifest.json", "h9-ii-biquads.json",
+                    "sony-eq-tables.json", "sony-presets.json", "plugin.json",
+                ] {
+                XCTAssertTrue(FileManager.default.fileExists(atPath: assets.appendingPathComponent(path).path), path)
+            }
+            let hidden = try FileManager.default.contentsOfDirectory(atPath: assets.deletingLastPathComponent().path)
+                .filter { $0.hasPrefix(".assets-stage-") }
+            XCTAssertTrue(hidden.isEmpty, "Stale asset banks remain: \(hidden)")
+            let retired = try FileManager.default.contentsOfDirectory(atPath: assets.deletingLastPathComponent().path)
+                .filter { $0.hasPrefix(".assets-retired-") }
+            XCTAssertTrue(retired.isEmpty)
+            let backups = try FileManager.default.contentsOfDirectory(
+                at: fixture.home.appendingPathComponent(".local/state/inzone-linux/backups"),
+                includingPropertiesForKeys: nil
+            )
+            XCTAssertEqual(backups.count, 1)
+            XCTAssertTrue(FileManager.default.fileExists(
+                atPath: backups[0].appendingPathComponent(".local/share/inzone-linux/assets/manifest.json").path
+            ))
+        }
+    }
+
+    func testReinstallRestoresPreviousAssetBankWhenLaterPublicationFails() throws {
+        try requireAssets()
+        try fixture { fixture in
+            try installFixtureExecutable(fixture)
+            try install(fixture)
+            let paths = InzonePaths(home: fixture.home)
+            let assetsIdentifier = try FileManager.default.attributesOfItem(atPath: paths.assetsDirectory.path)[.systemFileNumber]
+                as? NSNumber
+            let manifest = try Data(contentsOf: paths.assetsDirectory.appendingPathComponent("manifest.json"))
+            let previousPlugin = Data("previous plugin".utf8)
+            try previousPlugin.write(to: paths.pluginURL)
+            let previousBalanced = Data("previous balanced\n".utf8)
+            try previousBalanced.write(to: paths.configDirectory.appendingPathComponent("balanced.conf"))
+            let installedDocumentation = paths.configDirectory.appendingPathComponent("docs")
+            try FileManager.default.removeItem(at: installedDocumentation)
+            try write("blocks directory replacement\n", to: installedDocumentation)
+
+            XCTAssertThrowsError(try installUser(fixture))
+
+            let restoredIdentifier = try FileManager.default.attributesOfItem(atPath: paths.assetsDirectory.path)[.systemFileNumber]
+                as? NSNumber
+            XCTAssertEqual(restoredIdentifier, assetsIdentifier)
+            XCTAssertEqual(
+                try Data(contentsOf: paths.assetsDirectory.appendingPathComponent("manifest.json")), manifest
+            )
+            XCTAssertEqual(try Data(contentsOf: paths.pluginURL), previousPlugin)
+            XCTAssertEqual(
+                try Data(contentsOf: paths.configDirectory.appendingPathComponent("balanced.conf")), previousBalanced
+            )
+            let hidden = try FileManager.default.contentsOfDirectory(atPath: paths.shareDirectory.path)
+                .filter { $0.hasPrefix(".assets-stage-") }
+            XCTAssertTrue(hidden.isEmpty, "Stale rollback banks remain: \(hidden)")
+        }
+    }
+
+    func testUnknownManagedActiveProfileRejectsReinstallBeforePublication() throws {
+        try requireAssets()
+        try fixture { fixture in
+            try installFixtureExecutable(fixture)
+            try install(fixture)
+            let paths = InzonePaths(home: fixture.home)
+            try write("# INZONE profile: missing-profile\n{}\n", to: paths.activeProfile)
+            let assetsIdentifier = try FileManager.default.attributesOfItem(atPath: paths.assetsDirectory.path)[.systemFileNumber]
+                as? NSNumber
+            let plugin = try Data(contentsOf: paths.pluginURL)
+
+            XCTAssertThrowsError(try installUser(fixture)) { error in
+                XCTAssertTrue(error.localizedDescription.contains("missing-profile"), error.localizedDescription)
+            }
+
+            XCTAssertEqual(
+                try FileManager.default.attributesOfItem(atPath: paths.assetsDirectory.path)[.systemFileNumber]
+                    as? NSNumber,
+                assetsIdentifier
+            )
+            XCTAssertEqual(try Data(contentsOf: paths.pluginURL), plugin)
+            XCTAssertEqual(
+                try String(contentsOf: paths.activeProfile, encoding: .utf8),
+                "# INZONE profile: missing-profile\n{}\n"
+            )
         }
     }
 

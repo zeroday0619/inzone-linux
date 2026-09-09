@@ -2,13 +2,23 @@ import CLADSPA
 
 private enum PluginKind: Int {
     case spatial, dynamicRange, automaticLevel, microphone, biquad, equalizerBiquad
+    case firStandard, firPersonal, firDownmix
+
+    var firBank: FIRBank? {
+        switch self {
+        case .firStandard: return .standard
+        case .firPersonal: return .personal
+        case .firDownmix: return .downmix
+        default: return nil
+        }
+    }
 }
 
 private struct PluginState {
     var kind: PluginKind = .spatial
     var rate = 48_000
     var position = 0
-    var ports: InlineArray<10, UnsafeMutablePointer<Float>?> = .init(repeating: nil)
+    var ports: InlineArray<11, UnsafeMutablePointer<Float>?> = .init(repeating: nil)
     var controls: InlineArray<5, Float> = .init(repeating: 0)
     var block: InlineArray<16, Float> = .init(repeating: 0)
     var ready: InlineArray<16, Float> = .init(repeating: 0)
@@ -16,6 +26,7 @@ private struct PluginState {
     var spatial = SpatialALCState()
     var dynamicRange = DRCState()
     var automaticLevel = ALCState()
+    var fir = FIRState()
 
     @_noLocks
     func control(_ port: Int, fallback: Float, lower: Float, upper: Float) -> Float {
@@ -27,6 +38,8 @@ private struct PluginState {
     mutating func configure(force: Bool) {
         var next: InlineArray<5, Float> = .init(repeating: 0)
         switch kind {
+        case .firStandard, .firPersonal, .firDownmix:
+            break
         case .spatial:
             next[0] = dspRoundFloat(control(4, fallback: 1, lower: 0, upper: 1))
         case .dynamicRange:
@@ -54,6 +67,8 @@ private struct PluginState {
         controls = next
 
         switch kind {
+        case .firStandard, .firPersonal, .firDownmix:
+            fir.reset()
         case .spatial:
             spatial.reset(boost: Int(next[0]))
             position = 0
@@ -137,6 +152,11 @@ private func instantiate(_ descriptor: UnsafePointer<LADSPA_Descriptor>?,
     state.initialize(to: PluginState())
     state.pointee.kind = kind
     state.pointee.rate = Int(rate)
+    if let bank = kind.firBank, !state.pointee.fir.initialize(bank: bank) {
+        state.deinitialize(count: 1)
+        free(memory)
+        return nil
+    }
     state.pointee.configure(force: true)
     return memory
 }
@@ -145,7 +165,7 @@ private func instantiate(_ descriptor: UnsafePointer<LADSPA_Descriptor>?,
 @c(inzone_dsp_connect)
 private func connect(_ handle: LADSPA_Handle?, _ port: CUnsignedLong,
                      _ data: UnsafeMutablePointer<LADSPA_Data>?) {
-    guard port < 10, let handle else { return }
+    guard port < 11, let handle else { return }
     handle.assumingMemoryBound(to: PluginState.self).pointee.ports[Int(port)] = data
 }
 
@@ -162,6 +182,20 @@ private func run(_ handle: LADSPA_Handle?, _ frames: CUnsignedLong) {
     guard let handle, frames <= CUnsignedLong(Int.max) else { return }
     let state = handle.assumingMemoryBound(to: PluginState.self)
     state.pointee.configure(force: false)
+    if state.pointee.kind.firBank != nil {
+        if let latency = state.pointee.ports[10] { latency.pointee = 0 }
+        guard frames > 0, let outputLeft = state.pointee.ports[8],
+              let outputRight = state.pointee.ports[9] else { return }
+        for frame in 0..<Int(frames) {
+            // Every input is captured before either output is written for aliased hosts.
+            var inputs: InlineArray<8, Float> = .init(repeating: 0)
+            for channel in 0..<8 { inputs[channel] = state.pointee.ports[channel]?[frame] ?? 0 }
+            let output = state.pointee.fir.process(inputs: inputs)
+            outputLeft[frame] = output.left
+            outputRight[frame] = output.right
+        }
+        return
+    }
     if state.pointee.kind == .spatial, let latency = state.pointee.ports[5] {
         latency.pointee = 32
     }
@@ -180,6 +214,8 @@ private func run(_ handle: LADSPA_Handle?, _ frames: CUnsignedLong) {
         if !left.isFinite { left = 0 }
         if !right.isFinite { right = 0 }
         switch state.pointee.kind {
+        case .firStandard, .firPersonal, .firDownmix:
+            break
         case .spatial:
             state.pointee.processSpatial(left: &left, right: &right)
         case .biquad, .equalizerBiquad:
@@ -197,7 +233,9 @@ private func run(_ handle: LADSPA_Handle?, _ frames: CUnsignedLong) {
 @c(inzone_dsp_cleanup)
 private func cleanup(_ handle: LADSPA_Handle?) {
     guard let handle else { return }
-    handle.assumingMemoryBound(to: PluginState.self).deinitialize(count: 1)
+    let state = handle.assumingMemoryBound(to: PluginState.self)
+    state.pointee.fir.release()
+    state.deinitialize(count: 1)
     free(handle)
 }
 
@@ -208,21 +246,21 @@ private struct DescriptorStorage: @unchecked Sendable {
     let hints: UnsafeMutablePointer<LADSPA_PortRangeHint>
 
     init() {
-        descriptors = .allocate(capacity: 6)
-        ports = .allocate(capacity: 54)
-        names = .allocate(capacity: 54)
-        hints = .allocate(capacity: 54)
-        descriptors.initialize(repeating: LADSPA_Descriptor(), count: 6)
-        ports.initialize(repeating: 0, count: 54)
-        names.initialize(repeating: nil, count: 54)
-        hints.initialize(repeating: LADSPA_PortRangeHint(), count: 54)
+        descriptors = .allocate(capacity: 9)
+        ports = .allocate(capacity: 99)
+        names = .allocate(capacity: 99)
+        hints = .allocate(capacity: 99)
+        descriptors.initialize(repeating: LADSPA_Descriptor(), count: 9)
+        ports.initialize(repeating: 0, count: 99)
+        names.initialize(repeating: nil, count: 99)
+        hints.initialize(repeating: LADSPA_PortRangeHint(), count: 99)
     }
 
     func release() {
-        descriptors.deinitialize(count: 6)
-        ports.deinitialize(count: 54)
-        names.deinitialize(count: 54)
-        hints.deinitialize(count: 54)
+        descriptors.deinitialize(count: 9)
+        ports.deinitialize(count: 99)
+        names.deinitialize(count: 99)
+        hints.deinitialize(count: 99)
         descriptors.deallocate()
         ports.deallocate()
         names.deallocate()
@@ -233,7 +271,7 @@ private struct DescriptorStorage: @unchecked Sendable {
                 portDescriptors: [LADSPA_PortDescriptor], portNames: [StaticString],
                 portHints: [LADSPA_PortRangeHint]) {
         let index = kind.rawValue
-        let offset = index * 9
+        let offset = index * 11
         for port in portDescriptors.indices {
             ports[offset + port] = portDescriptors[port]
             names[offset + port] = staticCString(portNames[port])
@@ -283,6 +321,12 @@ private let descriptorStorage: DescriptorStorage = {
     let defaultOne = LADSPA_HINT_DEFAULT_1
     let integer = LADSPA_HINT_INTEGER
     let stereoPorts = [audioInput, audioInput, audioOutput, audioOutput]
+    let firPorts = Array(repeating: audioInput, count: 8) + [audioOutput, audioOutput, controlOutput]
+    let firNames: [StaticString] = [
+        "Input FL", "Input FR", "Input FC", "Input LFE", "Input RL", "Input RR", "Input SL", "Input SR",
+        "Output L", "Output R", "latency",
+    ]
+    let firHints = Array(repeating: hint(), count: 10) + [hint(bounded, 0, 0)]
 
     storage.define(.spatial, label: "inzone_spatial_alc",
                    title: "INZONE spatial automatic level control",
@@ -318,13 +362,19 @@ private let descriptorStorage: DescriptorStorage = {
                    portDescriptors: biquadPorts, portNames: biquadNames, portHints: biquadHints)
     storage.define(.equalizerBiquad, label: "inzone_eq_biquad", title: "INZONE user EQ biquad (float state)",
                    portDescriptors: biquadPorts, portNames: biquadNames, portHints: biquadHints)
+    storage.define(.firStandard, label: "inzone_fir_standard", title: "INZONE standard 7.1 FIR",
+                   portDescriptors: firPorts, portNames: firNames, portHints: firHints)
+    storage.define(.firPersonal, label: "inzone_fir_personal", title: "INZONE personalized 7.1 FIR",
+                   portDescriptors: firPorts, portNames: firNames, portHints: firHints)
+    storage.define(.firDownmix, label: "inzone_fir_downmix", title: "INZONE disabled-surround downmix FIR",
+                   portDescriptors: firPorts, portNames: firNames, portHints: firHints)
     storageToRelease = storage
     return storage
 }()
 
 @c(ladspa_descriptor)
 public func descriptorAt(_ index: CUnsignedLong) -> UnsafePointer<LADSPA_Descriptor>? {
-    guard index < 6 else { return nil }
+    guard index < 9 else { return nil }
     return UnsafePointer(descriptorStorage.descriptors + Int(index))
 }
 

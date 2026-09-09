@@ -1,3 +1,4 @@
+import Dispatch
 import Foundation
 import XCTest
 @testable import InzoneCore
@@ -30,6 +31,23 @@ final class SettingsTests: XCTestCase {
 
     private func nodes(_ graph: [String: Any]) throws -> [[String: Any]] {
         try XCTUnwrap(graph["nodes"] as? [[String: Any]])
+    }
+
+    private func prepareDownmix(_ paths: InzonePaths) throws {
+        try FileManager.default.createDirectory(at: paths.assetsDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: paths.pluginURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data().write(to: paths.pluginURL)
+        let downmixChannels = Dictionary(uniqueKeysWithValues: FilterBank.channels.map {
+            ($0.name, [$0.azimuth, $0.polar])
+        })
+        try Data(JSONSupport.encode([
+            "rate": 48000, "taps": 512, "downmix_channels": downmixChannels,
+        ]).utf8).write(to: paths.assetsDirectory.appendingPathComponent("manifest.json"))
+        let downmix = paths.assetsDirectory.appendingPathComponent("downmix", isDirectory: true)
+        try FileManager.default.createDirectory(at: downmix, withIntermediateDirectories: true)
+        for channel in GraphRenderer.channels {
+            try Data().write(to: downmix.appendingPathComponent(channel + ".wav"))
+        }
     }
 
     func testDefaultsAndLegacyJSONKeys() throws {
@@ -86,6 +104,181 @@ final class SettingsTests: XCTestCase {
         }
     }
 
+    func testCustomProfileCollectionPersistsCRUDIdentityOrderAndDefaults() throws {
+        try fixture { paths in
+            let settings = SettingsStore(paths: paths)
+            let profiles = SoundProfileStore(paths: paths)
+            let base = try settings.resolvedProfile("music")
+
+            let first = try profiles.create(basedOn: base)
+            let second = try profiles.create(basedOn: base)
+            XCTAssertEqual(first.name, "Sound Profile")
+            XCTAssertEqual(second.name, "Sound Profile 2")
+            XCTAssertNotEqual(first.identifier, second.identifier)
+            XCTAssertNotNil(UUID(uuidString: first.identifier))
+
+            try profiles.rename(first.identifier.uppercased(), to: "Renamed")
+            let clone = try profiles.clone(first.identifier)
+            XCTAssertEqual(clone.name, "Renamed")
+            XCTAssertNotEqual(clone.identifier, first.identifier)
+            XCTAssertEqual(try profiles.load().map(\.identifier), [first.identifier, second.identifier, clone.identifier])
+            XCTAssertEqual(try profiles.profile(first.identifier)?.name, "Renamed")
+            XCTAssertEqual(try settings.resolvedProfile(clone.identifier).templateProfile, "music")
+
+            try profiles.delete(second.identifier)
+            XCTAssertEqual(try profiles.load().map(\.identifier), [first.identifier, clone.identifier])
+            let attributes = try FileManager.default.attributesOfItem(atPath: profiles.fileURL.path)
+            XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o600)
+        }
+    }
+
+    func testCustomProfileCollectionEnforcesNameIdentifierAndCountLimitsAtomically() throws {
+        try fixture { paths in
+            let profiles = SoundProfileStore(paths: paths)
+            let options = ProfileOptions()
+            let records = (0..<256).map {
+                SoundProfileRecord(
+                    identifier: UUID().uuidString.lowercased(), name: "Profile \($0)",
+                    templateProfile: "balanced", options: options
+                )
+            }
+            try profiles.save(records)
+            let before = try Data(contentsOf: profiles.fileURL)
+            let base = try SettingsStore(paths: paths).resolvedProfile("balanced")
+            XCTAssertThrowsError(try profiles.create(name: "Overflow", basedOn: base))
+            XCTAssertEqual(try Data(contentsOf: profiles.fileURL), before)
+            XCTAssertThrowsError(try profiles.rename(records[0].identifier, to: ""))
+            XCTAssertThrowsError(try profiles.rename(records[0].identifier, to: String(repeating: "😀", count: 129)))
+            XCTAssertEqual(try Data(contentsOf: profiles.fileURL), before)
+
+            var invalid = records
+            invalid[1] = SoundProfileRecord(
+                identifier: records[0].identifier.uppercased(), name: "Duplicate",
+                templateProfile: "balanced", options: options
+            )
+            XCTAssertThrowsError(try profiles.save(invalid))
+            XCTAssertEqual(try Data(contentsOf: profiles.fileURL), before)
+        }
+    }
+
+    func testCustomProfileNamesRejectUnsafeUnicodeAndPreserveValidUnicode() throws {
+        try fixture { paths in
+            let store = SoundProfileStore(paths: paths)
+            let base = try SettingsStore(paths: paths).resolvedProfile("balanced")
+            for name in ["line\nfeed", "escape\u{1B}[31m", "bidi\u{202E}override", "join\u{200D}er",
+                         "line\u{2028}separator", "paragraph\u{2029}separator"] {
+                XCTAssertThrowsError(try store.create(name: name, basedOn: base), String(reflecting: name))
+            }
+            let valid = "한국어 العربية 😀"
+            let profile = try store.create(name: valid, basedOn: base)
+            XCTAssertEqual(profile.name, valid)
+            XCTAssertEqual(try store.load().first?.name, valid)
+        }
+    }
+
+    func testCustomProfileCollectionRejectsEncodedCloneOverflowAtomically() throws {
+        try fixture { paths in
+            let store = SoundProfileStore(paths: paths)
+            let prefix = Data(#"{"padding":""#.utf8)
+            let suffix = Data(#""}"#.utf8)
+            let source = prefix + Data(
+                repeating: 0x78, count: 2 * 1024 * 1024 - prefix.count - suffix.count
+            ) + suffix
+            let original = SoundProfileRecord(
+                identifier: UUID().uuidString.lowercased(), name: "Large",
+                templateProfile: "balanced", options: ProfileOptions(), windowsSource: source
+            )
+            try store.save([original])
+
+            var successfulClones = 0
+            while successfulClones < 20 {
+                let before = try Data(contentsOf: store.fileURL)
+                do {
+                    _ = try store.clone(original.identifier, name: "Clone \(successfulClones)")
+                    successfulClones += 1
+                } catch {
+                    XCTAssertTrue(error.localizedDescription.contains("24 MiB"))
+                    XCTAssertEqual(try Data(contentsOf: store.fileURL), before)
+                    break
+                }
+            }
+
+            XCTAssertLessThan(successfulClones, 20)
+            XCTAssertEqual(try store.load().count, successfulClones + 1)
+            XCTAssertLessThanOrEqual(try Data(contentsOf: store.fileURL).count, SoundProfileStore.maximumEncodedSize)
+        }
+    }
+
+    func testPublicCollectionSaveUsesTheCRUDLock() throws {
+        try fixture { paths in
+            let store = SoundProfileStore(paths: paths)
+            let profile = SoundProfileRecord(
+                identifier: UUID().uuidString.lowercased(), name: "Saved",
+                templateProfile: "balanced", options: ProfileOptions()
+            )
+            var collectionLock: FileLock? = try FileLock(
+                url: paths.configDirectory.appendingPathComponent("sound-profiles.lock"), nonblocking: false
+            )
+            let started = DispatchSemaphore(value: 0)
+            let finished = DispatchSemaphore(value: 0)
+            DispatchQueue.global().async {
+                started.signal()
+                try? store.save([profile])
+                finished.signal()
+            }
+
+            XCTAssertEqual(started.wait(timeout: .now() + 1), .success)
+            XCTAssertEqual(finished.wait(timeout: .now() + 0.05), .timedOut)
+            collectionLock = nil
+            XCTAssertNil(collectionLock)
+            XCTAssertEqual(finished.wait(timeout: .now() + 1), .success)
+            XCTAssertEqual(try store.load().map(\.identifier), [profile.identifier])
+        }
+    }
+
+    func testCloneReadsSourceInsideTheCollectionMutationLock() throws {
+        try fixture { paths in
+            let store = SoundProfileStore(paths: paths)
+            let identifier = UUID().uuidString.lowercased()
+            let original = SoundProfileRecord(
+                identifier: identifier, name: "Original", templateProfile: "music",
+                options: ProfileOptions(drc: 1), windowsSource: Data(#"{"marker":"old"}"#.utf8)
+            )
+            try store.save([original])
+            var lock: FileLock? = try FileLock(
+                url: paths.configDirectory.appendingPathComponent("sound-profiles.lock"), nonblocking: false
+            )
+            let started = DispatchSemaphore(value: 0)
+            let finished = DispatchSemaphore(value: 0)
+            DispatchQueue.global().async {
+                started.signal()
+                _ = try? store.clone(identifier)
+                finished.signal()
+            }
+            XCTAssertEqual(started.wait(timeout: .now() + 1), .success)
+            XCTAssertEqual(finished.wait(timeout: .now() + 0.05), .timedOut)
+
+            let updated = SoundProfileRecord(
+                identifier: identifier, name: "Updated", templateProfile: "voice",
+                options: ProfileOptions(drc: 2), windowsSource: Data(#"{"marker":"new"}"#.utf8)
+            )
+            let encoder = JSONEncoder()
+            var updatedData = try encoder.encode([updated])
+            updatedData.append(0x0A)
+            try AtomicFile.write(updatedData, to: store.fileURL)
+            lock = nil
+            XCTAssertNil(lock)
+            XCTAssertEqual(finished.wait(timeout: .now() + 1), .success)
+
+            let clone = try XCTUnwrap(store.load().last)
+            XCTAssertNotEqual(clone.identifier, identifier)
+            XCTAssertEqual(clone.name, "Updated")
+            XCTAssertEqual(clone.templateProfile, "voice")
+            XCTAssertEqual(clone.options.drc, 2)
+            XCTAssertEqual(clone.windowsSource, Data(#"{"marker":"new"}"#.utf8))
+        }
+    }
+
     func testVoiceTargetsChatAndKeepsMicrophoneIndependent() throws {
         try fixture { paths in
             try SettingsStore(paths: paths).save(["voice": ProfileOptions(drc: 2, outputALC: true, microphoneAGC: true)])
@@ -109,7 +302,7 @@ final class SettingsTests: XCTestCase {
 
     func testSonyGraphSignalOrderAndExactGains() throws {
         try fixture { paths in
-            try FileManager.default.createDirectory(at: paths.assetsDirectory, withIntermediateDirectories: true)
+            try prepareDownmix(paths)
             for name in ["sony-eq-tables.json", "sony-presets.json"] {
                 let source = root.appendingPathComponent("assets/" + name)
                 guard FileManager.default.fileExists(atPath: source.path) else {
@@ -178,9 +371,10 @@ final class SettingsTests: XCTestCase {
             let renderer = GraphRenderer(paths: paths)
             let complete = try renderer.buildSurround(assets: paths.assetsDirectory, plugin: paths.pluginURL, drc: 2)
             let graph = try XCTUnwrap(complete["filter.graph"] as? [String: Any])
-            XCTAssertEqual(graph["inputs"] as? [String], GraphRenderer.channels.map { "copy" + $0 + ":In" })
+            XCTAssertEqual(graph["inputs"] as? [String], GraphRenderer.channels.map { "fir:Input " + $0 })
             let nodes = try nodes(graph)
-            XCTAssertEqual(nodes.filter { $0["label"] as? String == "convolver" }.count, 16)
+            XCTAssertEqual(nodes.filter { $0["label"] as? String == "convolver" }.count, 0)
+            XCTAssertEqual(nodes.filter { $0["label"] as? String == "inzone_fir_standard" }.count, 1)
             XCTAssertEqual(nodes.filter { $0["label"] as? String == "inzone_biquad" }.count, 14)
             let links = try XCTUnwrap(graph["links"] as? [[String: String]])
             XCTAssertEqual(Set(links.compactMap { $0["input"] }).count, links.count)
@@ -191,6 +385,70 @@ final class SettingsTests: XCTestCase {
             XCTAssertThrowsError(try renderer.buildSurround(assets: paths.assetsDirectory, plugin: paths.pluginURL))
             try FileManager.default.removeItem(at: paths.pluginURL)
             XCTAssertThrowsError(try renderer.buildSurround(assets: paths.assetsDirectory, plugin: paths.pluginURL))
+        }
+    }
+
+    func testDownmixSupportsStereoFivePointOneAndSevenPointOneMappings() throws {
+        try fixture { paths in
+            try prepareDownmix(paths)
+            let renderer = GraphRenderer(paths: paths)
+            let complete = try renderer.buildDownmix(assets: paths.assetsDirectory, plugin: paths.pluginURL)
+            XCTAssertThrowsError(try GraphRenderer(
+                paths: paths, firDataRoot: paths.home.appendingPathComponent("other-data-root")
+            ).buildDownmix(assets: paths.assetsDirectory, plugin: paths.pluginURL))
+            let graph = try XCTUnwrap(complete["filter.graph"] as? [String: Any])
+            XCTAssertEqual(graph["inputs"] as? [String], GraphRenderer.channels.map { "fir:Input " + $0 })
+            XCTAssertEqual(GraphRenderer.fivePointOneChannels, ["FL", "FR", "FC", "LFE", "SL", "SR"])
+            let graphNodes = try nodes(graph)
+            XCTAssertFalse(graphNodes.contains { $0["label"] as? String == "convolver" })
+            XCTAssertFalse(graphNodes.contains { $0["label"] as? String == "linear" })
+            XCTAssertEqual(graphNodes.filter { $0["label"] as? String == "inzone_fir_downmix" }.count, 1)
+            let spatial = try XCTUnwrap(graphNodes.first { $0["name"] as? String == "spatial_alc" })
+            XCTAssertEqual((spatial["control"] as? [String: Int])?["Boost"], 1)
+            let capture = try XCTUnwrap(complete["capture.props"] as? [String: Any])
+            XCTAssertEqual(capture["node.name"] as? String, GraphRenderer.downmixSevenPointOneSink)
+            XCTAssertEqual(capture["node.latency"] as? String, "32/48000")
+            XCTAssertEqual(capture["audio.position"] as? [String], GraphRenderer.channels)
+            let rendered = try configuration(renderer.render(profile: "music", template: "{}"))
+            let modules = try XCTUnwrap(rendered["context.modules"] as? [[String: Any]])
+            XCTAssertEqual(modules.count, 3)
+            let layouts = try modules.map { module -> (String, [String]) in
+                let arguments = try XCTUnwrap(module["args"] as? [String: Any])
+                let capture = try XCTUnwrap(arguments["capture.props"] as? [String: Any])
+                return (
+                    try XCTUnwrap(capture["node.name"] as? String),
+                    try XCTUnwrap(capture["audio.position"] as? [String])
+                )
+            }
+            XCTAssertEqual(layouts.map(\.0), [
+                GraphRenderer.downmixSink,
+                GraphRenderer.downmixFivePointOneSink,
+                GraphRenderer.downmixSevenPointOneSink,
+            ])
+            XCTAssertEqual(layouts.map(\.1), [
+                GraphRenderer.InputChannelLayout.stereo.channels,
+                GraphRenderer.InputChannelLayout.fivePointOne.channels,
+                GraphRenderer.InputChannelLayout.sevenPointOne.channels,
+            ])
+        }
+    }
+
+    func testDownmixRejectsIncompleteOrIncorrectAssets() throws {
+        try fixture { paths in
+            try prepareDownmix(paths)
+            let renderer = GraphRenderer(paths: paths)
+            try FileManager.default.removeItem(
+                at: paths.assetsDirectory.appendingPathComponent("downmix/SR.wav")
+            )
+            XCTAssertThrowsError(try renderer.buildDownmix(assets: paths.assetsDirectory, plugin: paths.pluginURL)) {
+                XCTAssertEqual($0.localizedDescription, "Missing downmix channel: SR")
+            }
+            try Data().write(to: paths.assetsDirectory.appendingPathComponent("downmix/SR.wav"))
+            try Data(#"{"rate":48000,"taps":512,"downmix_channels":{"FL":[330,90]}}"#.utf8)
+                .write(to: paths.assetsDirectory.appendingPathComponent("manifest.json"))
+            XCTAssertThrowsError(try renderer.buildDownmix(assets: paths.assetsDirectory, plugin: paths.pluginURL)) {
+                XCTAssertEqual($0.localizedDescription, "Downmix manifest does not contain the required 7.1 channels")
+            }
         }
     }
 }

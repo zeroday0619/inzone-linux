@@ -13,6 +13,27 @@ public struct AutomationRule: Codable, Equatable, Sendable {
     }
 }
 
+private func normalizedProfileIdentifier(_ identifier: String) -> String {
+    UUID(uuidString: identifier)?.uuidString.lowercased() ?? identifier
+}
+
+private func profileIdentifiersEqual(_ left: String, _ right: String) -> Bool {
+    normalizedProfileIdentifier(left) == normalizedProfileIdentifier(right)
+}
+
+private func normalizedWindowsApplication(_ application: String) -> String? {
+    let normalized = application.replacingOccurrences(of: "\\", with: "/")
+    guard normalized.lowercased().hasSuffix(".exe") else { return nil }
+    return normalized.lowercased()
+}
+
+private func applicationIdentity(_ application: String) -> String {
+    if let normalized = normalizedWindowsApplication(application) {
+        return "windows:\(normalized)"
+    }
+    return "native:\(application)"
+}
+
 public struct AutomationDecision: Sendable {
     public private(set) var baseline: String
     public private(set) var applied: String?
@@ -23,12 +44,22 @@ public struct AutomationDecision: Sendable {
     private var since: TimeInterval = 0
 
     public init(current: String, token: String) {
-        baseline = current
+        baseline = normalizedProfileIdentifier(current)
+        self.token = token
+    }
+
+    init(baseline: String, applied: String, token: String) {
+        self.baseline = normalizedProfileIdentifier(baseline)
+        self.applied = normalizedProfileIdentifier(applied)
         self.token = token
     }
 
     public mutating func step(group: [AutomationRule], current: String, token: String, now: TimeInterval) -> String? {
-        if token != self.token || (applied != nil && current != applied) {
+        let current = normalizedProfileIdentifier(current)
+        let group = group.map {
+            AutomationRule(app: $0.app, profile: normalizedProfileIdentifier($0.profile), priority: $0.priority)
+        }
+        if token != self.token || (applied != nil && !profileIdentifiersEqual(current, applied!)) {
             self.token = token
             baseline = current
             applied = nil
@@ -43,38 +74,86 @@ public struct AutomationDecision: Sendable {
         if group != self.group { self.group = group; hold = false }
         if hold { return nil }
         let target = group.first?.profile ?? baseline
-        return target == current ? nil : target
+        return profileIdentifiersEqual(target, current) ? nil : target
     }
 
-    public mutating func committed(_ target: String) { applied = target }
+    public mutating func committed(_ target: String) { applied = normalizedProfileIdentifier(target) }
+}
+
+struct AutomationOwnership: Codable, Equatable, Sendable {
+    let baseline: String?
+    let applied: String?
+    let pending: String?
+    let token: String
+
+    static func inactive(token: String) -> AutomationOwnership {
+        AutomationOwnership(baseline: nil, applied: nil, pending: nil, token: token)
+    }
+
+    var isInactive: Bool { baseline == nil && applied == nil && pending == nil }
+}
+
+private func normalizedOwnership(_ ownership: AutomationOwnership) -> AutomationOwnership {
+    AutomationOwnership(
+        baseline: ownership.baseline.map(normalizedProfileIdentifier),
+        applied: ownership.applied.map(normalizedProfileIdentifier),
+        pending: ownership.pending.map(normalizedProfileIdentifier), token: ownership.token
+    )
 }
 
 nonisolated(unsafe) private var automationStopping: sig_atomic_t = 0
 private func automationSignalHandler(_ signal: Int32) { automationStopping = 1 }
 
-public struct AutomationStore {
+public struct AutomationStore: Sendable {
     public static let unit = "inzone-profile-auto.service"
-    public static let profiles = ["fps", "music", "voice", "balanced", "surround"]
+    public static let profiles = SettingsStore.profiles
     public let paths: InzonePaths
     public var fileURL: URL { paths.configDirectory.appendingPathComponent("auto-profiles.json") }
+    var ownershipURL: URL { paths.configDirectory.appendingPathComponent("auto-profile-ownership.json") }
 
     public init(paths: InzonePaths) { self.paths = paths }
 
     public static func validate(_ rules: [AutomationRule]) throws -> [AutomationRule] {
+        try validate(rules, availableProfiles: Set(profiles), allowUnregisteredUUIDs: true)
+    }
+
+    public static func validate(
+        _ rules: [AutomationRule], availableProfiles: Set<String>
+    ) throws -> [AutomationRule] {
+        try validate(rules, availableProfiles: availableProfiles, allowUnregisteredUUIDs: false)
+    }
+
+    private static func validate(
+        _ rules: [AutomationRule], availableProfiles: Set<String>, allowUnregisteredUUIDs: Bool
+    ) throws -> [AutomationRule] {
         guard rules.count <= 128 else { throw InzoneError.message("At most 128 automatic profile rules are supported.") }
+        let availableIdentifiers = Set(availableProfiles.map(normalizedProfileIdentifier))
         var seen = Set<String>()
+        var validated: [AutomationRule] = []
+        validated.reserveCapacity(rules.count)
         for rule in rules {
             guard !rule.app.isEmpty, rule.app.unicodeScalars.count <= 1024,
-                  !rule.app.unicodeScalars.contains(where: { $0.value < 32 }), seen.insert(rule.app).inserted else {
+                  !rule.app.unicodeScalars.contains(where: { $0.value < 32 }),
+                  seen.insert(applicationIdentity(rule.app)).inserted else {
                 throw InzoneError.message("Executable names or paths must be nonempty, unique strings without control characters.")
             }
-            guard profiles.contains(rule.profile) else { throw InzoneError.message("Invalid automatic profile: \(rule.profile)") }
+            let profile = normalizedProfileIdentifier(rule.profile)
+            let isUUID = UUID(uuidString: rule.profile) != nil
+            let validProfile = availableIdentifiers.contains(profile) || (allowUnregisteredUUIDs && isUUID)
+            guard validProfile else {
+                throw InzoneError.message("Invalid automatic profile: \(rule.profile)")
+            }
             guard (-1000...1000).contains(rule.priority) else { throw InzoneError.message("Automatic profile priority must be between -1000 and 1000.") }
+            validated.append(AutomationRule(app: rule.app, profile: profile, priority: rule.priority))
         }
-        return rules
+        return validated
     }
 
     public static func decode(_ data: Data) throws -> [AutomationRule] {
+        try validate(decodeSchema(data))
+    }
+
+    private static func decodeSchema(_ data: Data) throws -> [AutomationRule] {
         guard let objects = try JSONSupport.decode(data) as? [[String: Any]], objects.count <= 128 else {
             throw InzoneError.message("Automatic profiles must be an array of at most 128 rules.")
         }
@@ -85,16 +164,39 @@ public struct AutomationStore {
                 throw InzoneError.message("Each automatic rule requires app, profile, and an integer priority.")
             }
         }
-        return try validate(JSONDecoder().decode([AutomationRule].self, from: data))
+        return try JSONDecoder().decode([AutomationRule].self, from: data)
     }
 
     public func load() throws -> [AutomationRule] {
+        let rulesLock = try FileLock(
+            url: paths.configDirectory.appendingPathComponent("auto-rules.lock"), nonblocking: false
+        )
+        defer { withExtendedLifetime(rulesLock) {} }
+        return try loadUnlocked()
+    }
+
+    private func loadUnlocked() throws -> [AutomationRule] {
         guard FileManager.default.fileExists(atPath: fileURL.path) else { return [] }
-        return try Self.decode(Data(contentsOf: fileURL))
+        let rules = try Self.decodeSchema(Data(contentsOf: fileURL))
+        let identifiers = Set(try SettingsStore(paths: paths).availableProfiles().map(\.identifier))
+        return try Self.validate(rules, availableProfiles: identifiers)
     }
 
     public func save(_ rules: [AutomationRule]) throws {
-        let validated = try Self.validate(rules)
+        let switchLock = try FileLock(
+            url: paths.configDirectory.appendingPathComponent("switch.lock"), nonblocking: false
+        )
+        defer { withExtendedLifetime(switchLock) {} }
+        let rulesLock = try FileLock(
+            url: paths.configDirectory.appendingPathComponent("auto-rules.lock"), nonblocking: false
+        )
+        defer { withExtendedLifetime(rulesLock) {} }
+        try saveUnlocked(rules)
+    }
+
+    private func saveUnlocked(_ rules: [AutomationRule]) throws {
+        let identifiers = Set(try SettingsStore(paths: paths).availableProfiles().map(\.identifier))
+        let validated = try Self.validate(rules, availableProfiles: identifiers)
         try prepareDirectory()
         let objects = validated.map { ["app": $0.app, "profile": $0.profile, "priority": $0.priority] as [String: Any] }
         let text = try JSONSupport.encode(objects, pretty: true)
@@ -103,11 +205,46 @@ public struct AutomationStore {
 
     public func edit(app: String, profile: String?, priority: Int = 0) throws {
         try prepareDirectory()
-        let lock = try FileLock(url: paths.configDirectory.appendingPathComponent("auto-rules.lock"), nonblocking: false)
-        defer { withExtendedLifetime(lock) {} }
-        var rules = try load().filter { $0.app != app }
+        let switchLock = try FileLock(
+            url: paths.configDirectory.appendingPathComponent("switch.lock"), nonblocking: false
+        )
+        defer { withExtendedLifetime(switchLock) {} }
+        let rulesLock = try FileLock(
+            url: paths.configDirectory.appendingPathComponent("auto-rules.lock"), nonblocking: false
+        )
+        defer { withExtendedLifetime(rulesLock) {} }
+        let existing: [AutomationRule]
+        if FileManager.default.fileExists(atPath: fileURL.path) {
+            existing = try Self.decodeSchema(Data(contentsOf: fileURL))
+        } else {
+            existing = []
+        }
+        let editedIdentity = applicationIdentity(app)
+        var rules = existing.filter { applicationIdentity($0.app) != editedIdentity }
         if let profile { rules.append(AutomationRule(app: app, profile: profile, priority: priority)) }
-        try save(rules)
+        try saveUnlocked(rules)
+    }
+
+    public func references(profile identifier: String) throws -> Bool {
+        try referencedProfileIdentifiers().contains(normalizedProfileIdentifier(identifier))
+    }
+
+    /// Returns profile identifiers retained by rules or a live watcher transaction.
+    public func referencedProfileIdentifiers() throws -> Set<String> {
+        let rulesLock = try FileLock(
+            url: paths.configDirectory.appendingPathComponent("auto-rules.lock"), nonblocking: false
+        )
+        defer { withExtendedLifetime(rulesLock) {} }
+        var identifiers = Set<String>()
+        if FileManager.default.fileExists(atPath: fileURL.path) {
+            let rules = try Self.decodeSchema(Data(contentsOf: fileURL))
+            identifiers.formUnion(rules.map { normalizedProfileIdentifier($0.profile) })
+        }
+        if let ownership = try loadOwnershipUnlocked() {
+            identifiers.formUnion([ownership.baseline, ownership.applied, ownership.pending]
+                .compactMap { $0 }.map(normalizedProfileIdentifier))
+        }
+        return identifiers
     }
 
     public func manualToken() -> String {
@@ -123,9 +260,15 @@ public struct AutomationStore {
     }
 
     public static func matching(_ rules: [AutomationRule], names: Set<String>) -> [AutomationRule] {
-        rules.enumerated().sorted {
+        let windowsNames = Set(names.compactMap(normalizedWindowsApplication))
+        return rules.enumerated().sorted {
             $0.element.priority == $1.element.priority ? $0.offset < $1.offset : $0.element.priority > $1.element.priority
-        }.map(\.element).filter { names.contains($0.app) }
+        }.map(\.element).filter {
+            if let application = normalizedWindowsApplication($0.app) {
+                return windowsNames.contains(application)
+            }
+            return names.contains($0.app)
+        }
     }
 
     public static func processNames(procDirectory: URL = URL(fileURLWithPath: "/proc"), uid: uid_t = getuid()) -> Set<String> {
@@ -142,9 +285,9 @@ public struct AutomationStore {
             defer { try? stream.close() }
             guard let data = try? stream.read(upToCount: 4096) else { continue }
             let first = String(decoding: data.prefix { $0 != 0 }, as: UTF8.self)
-            if first.lowercased().hasSuffix(".exe") {
-                result.insert(first)
-                result.insert(first.replacingOccurrences(of: "\\", with: "/").components(separatedBy: "/").last ?? first)
+            if let application = normalizedWindowsApplication(first) {
+                result.insert(application)
+                result.insert(application.components(separatedBy: "/").last ?? application)
             }
         }
         return result
@@ -167,18 +310,46 @@ public struct AutomationStore {
             _ = Glibc.signal(SIGTERM, previousTerm)
             _ = Glibc.signal(SIGINT, previousInterrupt)
         }
-        let current = try controller.status()
-        var decision = AutomationDecision(current: current == "original" ? "restore" : current, token: manualToken())
+        let currentStatus = try controller.status()
+        let current = currentStatus == "original" ? "restore" : normalizedProfileIdentifier(currentStatus)
+        let token = manualToken()
+        var decision = try resumedDecision(current: current, token: token)
+        var persistedOwnership = ownership(for: decision)
         var retry: TimeInterval = 0
         var lastError: String?
         while automationStopping == 0 {
             do {
                 let now = ProcessInfo.processInfo.systemUptime
                 let group = Self.matching(try load(), names: Self.processNames())
-                if let target = decision.step(group: group, current: try controller.status(), token: manualToken(), now: now),
-                   now >= retry, try controller.isConnected() {
-                    try controller.activate(target, automatic: true, autoToken: decision.token)
+                let activeStatus = try controller.status()
+                let active = activeStatus == "original" ? "restore" : activeStatus
+                let target = decision.step(
+                    group: group, current: active, token: manualToken(), now: now
+                )
+                let nextOwnership = ownership(for: decision)
+                if nextOwnership != persistedOwnership {
+                    try saveOwnership(nextOwnership)
+                    persistedOwnership = nextOwnership
+                }
+                if let target, now >= retry, try controller.isConnected() {
+                    let previous = persistedOwnership
+                    let pending = AutomationOwnership(
+                        baseline: decision.baseline, applied: decision.applied,
+                        pending: normalizedProfileIdentifier(target), token: decision.token
+                    )
+                    try saveOwnership(pending)
+                    persistedOwnership = pending
+                    do {
+                        try controller.activate(target, automatic: true, autoToken: decision.token)
+                    } catch {
+                        try saveOwnership(previous)
+                        persistedOwnership = previous
+                        throw error
+                    }
                     decision.committed(target)
+                    let committed = ownership(for: decision)
+                    try saveOwnership(committed)
+                    persistedOwnership = committed
                     writeStatus("Automatic profile: \(target)")
                 }
                 lastError = nil
@@ -192,9 +363,92 @@ public struct AutomationStore {
         }
         // Restore only the profile still owned by this watcher at shutdown.
         if let applied = decision.applied, manualToken() == decision.token,
-           try controller.status() == applied, decision.baseline != applied {
+           profileIdentifiersEqual(try controller.status(), applied),
+           !profileIdentifiersEqual(decision.baseline, applied) {
+            try saveOwnership(AutomationOwnership(
+                baseline: decision.baseline, applied: applied,
+                pending: decision.baseline, token: decision.token
+            ))
             try controller.activate(decision.baseline, automatic: true, autoToken: decision.token)
         }
+        try saveOwnership(.inactive(token: decision.token))
+    }
+
+    func resumedDecision(current: String, token: String) throws -> AutomationDecision {
+        let current = normalizedProfileIdentifier(current)
+        if let ownership = try loadOwnership(), ownership.token == token,
+           let baseline = ownership.baseline,
+           [ownership.applied, ownership.pending].compactMap({ $0 }).contains(where: {
+               profileIdentifiersEqual($0, current)
+           }), !(ownership.pending.map { profileIdentifiersEqual($0, baseline) } == true
+                  && profileIdentifiersEqual(current, baseline)) {
+            let decision = AutomationDecision(baseline: baseline, applied: current, token: token)
+            try saveOwnership(decision: decision)
+            return decision
+        }
+        let decision = AutomationDecision(current: current, token: token)
+        try saveOwnership(.inactive(token: token))
+        return decision
+    }
+
+    func loadOwnership() throws -> AutomationOwnership? {
+        let rulesLock = try FileLock(
+            url: paths.configDirectory.appendingPathComponent("auto-rules.lock"), nonblocking: false
+        )
+        defer { withExtendedLifetime(rulesLock) {} }
+        return try loadOwnershipUnlocked()
+    }
+
+    private func loadOwnershipUnlocked() throws -> AutomationOwnership? {
+        guard let ownership = try decodeOwnershipUnlocked(),
+              let baseline = ownership.baseline,
+              ownership.applied != nil || ownership.pending != nil else { return nil }
+        return AutomationOwnership(
+            baseline: baseline, applied: ownership.applied,
+            pending: ownership.pending, token: ownership.token
+        )
+    }
+
+    private func decodeOwnershipUnlocked() throws -> AutomationOwnership? {
+        guard FileManager.default.fileExists(atPath: ownershipURL.path) else { return nil }
+        let ownership = try JSONDecoder().decode(
+            AutomationOwnership.self, from: Data(contentsOf: ownershipURL)
+        )
+        return normalizedOwnership(ownership)
+    }
+
+    func saveOwnership(decision: AutomationDecision) throws {
+        try saveOwnership(ownership(for: decision))
+    }
+
+    private func ownership(for decision: AutomationDecision) -> AutomationOwnership {
+        if decision.applied == nil {
+            return .inactive(token: decision.token)
+        }
+        return AutomationOwnership(
+                baseline: decision.baseline, applied: decision.applied,
+                pending: nil, token: decision.token
+        )
+    }
+
+    func saveOwnership(_ ownership: AutomationOwnership) throws {
+        let switchLock = try FileLock(
+            url: paths.configDirectory.appendingPathComponent("switch.lock"), nonblocking: false
+        )
+        defer { withExtendedLifetime(switchLock) {} }
+        let rulesLock = try FileLock(
+            url: paths.configDirectory.appendingPathComponent("auto-rules.lock"), nonblocking: false
+        )
+        defer { withExtendedLifetime(rulesLock) {} }
+        try prepareDirectory()
+        let normalized = normalizedOwnership(ownership)
+        let existing = try decodeOwnershipUnlocked()
+        if existing == normalized || (existing?.isInactive ?? true) && normalized.isInactive {
+            return
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        try AtomicFile.write(try encoder.encode(normalized) + Data("\n".utf8), to: ownershipURL)
     }
 
     private func prepareDirectory() throws {

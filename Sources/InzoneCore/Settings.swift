@@ -39,8 +39,258 @@ public struct ProfileOptions: Codable, Equatable, Sendable {
     public var hasEqualizer: Bool { equalizerEnabled || equalizer.contains(where: { $0 != 0 }) }
 }
 
+public struct SoundProfileRecord: Codable, Equatable, Sendable {
+    public let identifier: String
+    public var name: String
+    public let templateProfile: String
+    public var options: ProfileOptions
+    public var windowsSource: Data?
+
+    public init(
+        identifier: String, name: String, templateProfile: String,
+        options: ProfileOptions, windowsSource: Data? = nil
+    ) {
+        self.identifier = identifier
+        self.name = name
+        self.templateProfile = templateProfile
+        self.options = options
+        self.windowsSource = windowsSource
+    }
+}
+
+public struct ResolvedProfile: Equatable, Sendable {
+    public let identifier: String
+    public let name: String
+    public let templateProfile: String
+    public let options: ProfileOptions
+    public let isBuiltIn: Bool
+
+    public var isSurround: Bool { templateProfile == "surround" }
+    public var isVoice: Bool { templateProfile == "voice" }
+}
+
+public struct SoundProfileStore: Sendable {
+    public static let maximumProfileCount = 256
+    public static let maximumEncodedSize = 24 * 1024 * 1024
+    public let paths: InzonePaths
+    public var fileURL: URL { paths.configDirectory.appendingPathComponent("sound-profiles.json") }
+
+    public init(paths: InzonePaths) { self.paths = paths }
+
+    public func load() throws -> [SoundProfileRecord] {
+        guard FileManager.default.fileExists(atPath: fileURL.path) else { return [] }
+        let attributes = try FileManager.default.attributesOfItem(atPath: fileURL.path)
+        guard attributes[.type] as? FileAttributeType == .typeRegular,
+              let size = attributes[.size] as? NSNumber,
+              size.uint64Value <= UInt64(Self.maximumEncodedSize) else {
+            throw InzoneError.message("The sound profile collection must be a regular file no larger than 24 MiB.")
+        }
+        let handle = try FileHandle(forReadingFrom: fileURL)
+        defer { try? handle.close() }
+        var data = Data()
+        while data.count <= Self.maximumEncodedSize {
+            let chunk = try handle.read(upToCount: Self.maximumEncodedSize + 1 - data.count) ?? Data()
+            if chunk.isEmpty { break }
+            data.append(chunk)
+        }
+        guard data.count <= Self.maximumEncodedSize else {
+            throw InzoneError.message("The sound profile collection must be a regular file no larger than 24 MiB.")
+        }
+        let records = try JSONDecoder().decode([SoundProfileRecord].self, from: data)
+        return try Self.validate(records)
+    }
+
+    func save(_ records: [SoundProfileRecord]) throws {
+        let lock = try FileLock(
+            url: paths.configDirectory.appendingPathComponent("sound-profiles.lock"), nonblocking: false
+        )
+        defer { withExtendedLifetime(lock) {} }
+        try saveUnlocked(records)
+    }
+
+    private func saveUnlocked(_ records: [SoundProfileRecord]) throws {
+        let records = try Self.validate(records)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        var data = try encoder.encode(records)
+        data.append(0x0A)
+        guard data.count <= Self.maximumEncodedSize else {
+            throw InzoneError.message("The encoded sound profile collection must be no larger than 24 MiB.")
+        }
+        try AtomicFile.write(data, to: fileURL)
+    }
+
+    public func profile(_ identifier: String) throws -> SoundProfileRecord? {
+        try load().first { $0.identifier.caseInsensitiveCompare(identifier) == .orderedSame }
+    }
+
+    @discardableResult
+    func create(name: String? = nil, basedOn base: ResolvedProfile) throws -> SoundProfileRecord {
+        return try mutate { records in
+            guard records.count < Self.maximumProfileCount else {
+                throw InzoneError.message("At most 256 custom sound profiles are supported.")
+            }
+            let selectedName = name ?? Self.nextName(in: records)
+            try Self.validateName(selectedName)
+            let record = SoundProfileRecord(
+                identifier: UUID().uuidString.lowercased(), name: selectedName,
+                templateProfile: base.templateProfile, options: base.options
+            )
+            records.append(record)
+            return record
+        }
+    }
+
+    @discardableResult
+    func clone(_ identifier: String, name: String? = nil) throws -> SoundProfileRecord {
+        return try mutate { records in
+            guard records.count < Self.maximumProfileCount else {
+                throw InzoneError.message("At most 256 custom sound profiles are supported.")
+            }
+            let settings = SettingsStore(paths: paths)
+            let source: ResolvedProfile
+            let preserved: Data?
+            if let record = records.first(where: {
+                $0.identifier.caseInsensitiveCompare(identifier) == .orderedSame
+            }) {
+                source = ResolvedProfile(
+                    identifier: record.identifier, name: record.name,
+                    templateProfile: record.templateProfile, options: record.options,
+                    isBuiltIn: false
+                )
+                preserved = record.windowsSource
+            } else {
+                guard SettingsStore.profiles.contains(identifier) else {
+                    throw InzoneError.message("Invalid DSP profile: \(identifier)")
+                }
+                source = try settings.resolvedProfile(identifier)
+                preserved = nil
+            }
+            let cloneName = name ?? source.name
+            try Self.validateName(cloneName)
+            let record = SoundProfileRecord(
+                identifier: UUID().uuidString.lowercased(), name: cloneName,
+                templateProfile: source.templateProfile, options: source.options,
+                windowsSource: preserved
+            )
+            records.append(record)
+            return record
+        }
+    }
+
+    func rename(_ identifier: String, to name: String) throws {
+        try Self.validateName(name)
+        try mutate { records in
+            guard let index = Self.index(of: identifier, in: records) else {
+                throw InzoneError.message("Unknown custom sound profile: \(identifier)")
+            }
+            records[index].name = name
+        }
+    }
+
+    func replaceOptions(_ identifier: String, with options: ProfileOptions) throws {
+        let validated = try SettingsStore(paths: paths).updated(options, with: [:])
+        try mutate { records in
+            guard let index = Self.index(of: identifier, in: records) else {
+                throw InzoneError.message("Unknown custom sound profile: \(identifier)")
+            }
+            records[index].options = validated
+        }
+    }
+
+    func delete(_ identifier: String) throws {
+        try mutate { records in
+            guard let index = Self.index(of: identifier, in: records) else {
+                throw InzoneError.message("Unknown custom sound profile: \(identifier)")
+            }
+            records.remove(at: index)
+        }
+    }
+
+    func replace(with records: [SoundProfileRecord]) throws {
+        let records = try Self.validate(records)
+        let lock = try FileLock(
+            url: paths.configDirectory.appendingPathComponent("sound-profiles.lock"), nonblocking: false
+        )
+        defer { withExtendedLifetime(lock) {} }
+        try saveUnlocked(records)
+    }
+
+    private func mutate<Result>(_ body: (inout [SoundProfileRecord]) throws -> Result) throws -> Result {
+        let lock = try FileLock(
+            url: paths.configDirectory.appendingPathComponent("sound-profiles.lock"), nonblocking: false
+        )
+        defer { withExtendedLifetime(lock) {} }
+        var records = try load()
+        let result = try body(&records)
+        try saveUnlocked(records)
+        return result
+    }
+
+    public static func validate(_ records: [SoundProfileRecord]) throws -> [SoundProfileRecord] {
+        guard records.count <= maximumProfileCount else {
+            throw InzoneError.message("At most 256 custom sound profiles are supported.")
+        }
+        var identifiers = Set<String>()
+        let settings = SettingsStore(paths: InzonePaths(home: URL(fileURLWithPath: "/")))
+        for record in records {
+            guard UUID(uuidString: record.identifier) != nil,
+                  identifiers.insert(record.identifier.lowercased()).inserted else {
+                throw InzoneError.message("Sound profile identifiers must be unique UUIDs.")
+            }
+            try validateName(record.name)
+            guard SettingsStore.profiles.contains(record.templateProfile) else {
+                throw InzoneError.message("Unknown sound profile template: \(record.templateProfile)")
+            }
+            _ = try settings.updated(record.options, with: [:])
+            if let source = record.windowsSource {
+                guard source.count <= SonyPresets.maximumWindowsCollectionSize else {
+                    throw InzoneError.message("A preserved Windows profile must be a JSON object no larger than 16 MiB.")
+                }
+                try SonyPresets.validateRecognizedFieldKeys(in: source)
+                guard (try JSONSupport.decode(source)) is [String: Any] else {
+                    throw InzoneError.message("A preserved Windows profile must be a JSON object no larger than 16 MiB.")
+                }
+            }
+        }
+        return records
+    }
+
+    static func validateName(_ name: String) throws {
+        let unsafeScalar = name.unicodeScalars.contains { scalar in
+            switch scalar.properties.generalCategory {
+            case .control, .format, .lineSeparator, .paragraphSeparator:
+                true
+            default:
+                false
+            }
+        }
+        guard (1...256).contains(name.utf16.count), !unsafeScalar else {
+            throw InzoneError.message(
+                "Sound profile names must contain 1 to 256 UTF-16 code units and no control or format characters."
+            )
+        }
+    }
+
+    private static func index(of identifier: String, in records: [SoundProfileRecord]) -> Int? {
+        records.firstIndex { $0.identifier.caseInsensitiveCompare(identifier) == .orderedSame }
+    }
+
+    private static func nextName(in records: [SoundProfileRecord]) -> String {
+        let names = Set(records.map(\.name))
+        if !names.contains("Sound Profile") { return "Sound Profile" }
+        var suffix = 2
+        while names.contains("Sound Profile \(suffix)") { suffix += 1 }
+        return "Sound Profile \(suffix)"
+    }
+}
+
 public struct SettingsStore: Sendable {
     public static let profiles = ["fps", "music", "voice", "balanced", "surround"]
+    public static let profileNames = [
+        "fps": "FPS", "music": "Music", "voice": "Voice",
+        "balanced": "Balanced", "surround": "Surround",
+    ]
     public static let frequencies: [Double] = [31.5, 63, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
     public let paths: InzonePaths
 
@@ -53,8 +303,39 @@ public struct SettingsStore: Sendable {
     }
 
     public func options(_ name: String) throws -> ProfileOptions {
-        guard Self.profiles.contains(name) else { throw InzoneError.message("Invalid DSP profile: \(name)") }
-        return try load()[name] ?? ProfileOptions()
+        try resolvedProfile(name).options
+    }
+
+    public func profileIfAvailable(_ identifier: String) throws -> ResolvedProfile? {
+        if Self.profiles.contains(identifier) {
+            return ResolvedProfile(
+                identifier: identifier, name: Self.profileNames[identifier] ?? identifier,
+                templateProfile: identifier, options: try load()[identifier] ?? ProfileOptions(), isBuiltIn: true
+            )
+        }
+        guard let record = try SoundProfileStore(paths: paths).profile(identifier) else { return nil }
+        return ResolvedProfile(
+            identifier: record.identifier, name: record.name, templateProfile: record.templateProfile,
+            options: record.options, isBuiltIn: false
+        )
+    }
+
+    public func resolvedProfile(_ identifier: String) throws -> ResolvedProfile {
+        guard let profile = try profileIfAvailable(identifier) else {
+            throw InzoneError.message("Invalid DSP profile: \(identifier)")
+        }
+        return profile
+    }
+
+    public func availableProfiles() throws -> [ResolvedProfile] {
+        let builtIn = try Self.profiles.map { try resolvedProfile($0) }
+        let custom = try SoundProfileStore(paths: paths).load().map {
+            ResolvedProfile(
+                identifier: $0.identifier, name: $0.name, templateProfile: $0.templateProfile,
+                options: $0.options, isBuiltIn: false
+            )
+        }
+        return builtIn + custom
     }
 
     public func save(_ settings: [String: ProfileOptions]) throws {

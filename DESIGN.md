@@ -97,6 +97,21 @@ The default Touch layout and the optional Compact layout share the shell, model,
 
 The default layout uses a profile list beside a detail column. The detail column contains the selected profile's description and sound-processing values. Selection is a preview; it does not mean that the profile has been applied.
 
+The list contains the five built-in profiles, custom profiles, and Restore.
+Selection follows a custom profile's stable UUID across rename and collection
+reordering. Long collections are paged so all 256 supported custom profiles remain
+reachable. Duplicate display names are allowed; automation selection appends a
+short identifier when a name alone is ambiguous.
+
+Profile management exposes Create, Duplicate, Rename, Delete, Import, Replace,
+and Export. Import appends without confirmation, stops at the 256-profile limit,
+and reports imported and skipped counts. Replace requires `IMPORT` and publishes
+the validated collection as a replacement. Built-ins and Restore cannot be renamed or deleted. The
+active profile and profiles referenced by automation ownership cannot be deleted
+or removed by collection replacement. Destructive or replacing actions require the
+literal confirmation shown by the prompt: `DELETE`, `IMPORT`, `OVERWRITE`,
+`RESET`, or `REPLACE` as applicable.
+
 Keep Device and Automation directly reachable from the lower action area. Controls opens sound settings, EQ, and presets. Device & apps provides additional destinations, including personalization import. Secondary navigation should not force repeated trips through unrelated menus.
 
 ### Sound controls and EQ
@@ -129,6 +144,22 @@ Back, Discard, Refresh, and Apply remain in the lower action area. Microphone mo
 
 Compact mode retains a linear device list with text status. Category tabs and inline adjustment controls belong to Touch mode.
 
+Device startup creates one atomic observation: a GET snapshot, event watermarks,
+and an asynchronous notification stream. Apply a notification only when its
+revision is newer than the snapshot watermark for that event. This prevents an
+unsolicited status packet received before the related GET response from replacing
+the completed snapshot. Disconnect clears live battery, firmware, headphone,
+microphone, Bluetooth, and attachment data.
+
+The Info tab displays only the firmware versions installed on the headset and
+transceiver. It must not imply that the values were compared with a latest release.
+No firmware lookup, download, update, or flashing action belongs in the TUI.
+
+Game, Chat, and microphone host levels come from PipeWire/PulseAudio rather than
+the HCI event stream. Refresh them explicitly after an external mixer changes
+those values; do not present the device notification stream as a host-mixer
+subscription.
+
 ### Automation and input forms
 
 An empty automation screen explains what the user can do and presents Add rule. Do not show navigation or deletion controls for a nonexistent list. When rules exist, keep list navigation distinct from editing and service controls.
@@ -140,11 +171,19 @@ Forms show their specific field instruction, the input, and cancellation/continu
 | Interaction | Persistence and commit behavior |
 | --- | --- |
 | Select a profile or preset | Changes the selection only; Apply performs the operation. |
+| Create or duplicate a profile | Validates the name and base, writes the collection atomically, and selects the returned stable identifier. |
+| Rename a profile | Changes the custom profile's display name without changing its UUID, routing template, or automation target. |
+| Delete a profile | Requires `DELETE` and rejects active or automation-owned profiles before mutation. |
+| Import a Windows collection | Appends validated entries up to 256 without confirmation and reports imported and skipped counts. |
+| Replace from a Windows collection | Requires `IMPORT`, validates the complete replacement first, preserves required active/automation identifiers, and restores the previous collection if active-profile reapplication fails. |
 | Change a profile DSP option | Applies immediately. The controls screen states this behavior. |
 | Edit EQ | Changes an in-memory draft. Reset all changes the draft; Save & Apply commits it; Cancel discards it. |
 | Adjust device settings | Stores per-setting drafts keyed by the setting name. Selection, tab changes, refresh, Back, and workspace navigation preserve them. |
 | Apply device settings | Writes and verifies settings sequentially. This is not an atomic transaction. Readback clears confirmed values; unconfirmed drafts remain after failures or loss of availability. |
 | Discard device changes | Clears drafts without writing settings. |
+| Import personalization | Stages and validates a complete private FIR bank, atomically exchanges it, and rolls back the bank and active profile if activation fails. A bank whose rollback is unresolved remains protected from cleanup. |
+| Reset personalization | Requires `RESET`, changes all built-in and custom personal-HRTF options to standard, reapplies the active profile, and retires the old bank. |
+| Retry personalization cleanup | Deletes only validated retired bank directories; pending cleanup remains visible after a committed import or reset. |
 | Exit the application | Ends the session; drafts are not persisted. There is no universal quit-confirmation dialog. |
 
 Never report a draft as saved merely because a control changed visually. Missing device data must not be presented as zero, Off, or a successful update. Preserve distinctions between charging, running on battery, charge error, unknown data, and disconnection.

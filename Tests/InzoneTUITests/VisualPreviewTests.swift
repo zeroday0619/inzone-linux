@@ -15,11 +15,13 @@ struct VisualPreviewTests {
                 ("profile", TerminalScreen.profiles, false),
                 ("profile-controls", .profiles, true),
                 ("device-tools", .profiles, true),
+                ("profile-manager", .profileManager, false),
                 ("equalizer", .equalizer, false),
                 ("equalizer-example", .equalizer, false),
                 ("device", .device, false),
                 ("presets", .presets, false),
                 ("automation", .automation, false),
+                ("automation-profile-picker", .automationProfilePicker, false),
                 ("prompt", .prompt, false),
             ] {
                 // The worker-free model keeps visual inspection independent of hardware and user configuration.

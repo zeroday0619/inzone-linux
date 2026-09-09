@@ -57,7 +57,9 @@ extension PipeWireDiagnostics {
             try writeJSON(["name": plugin], to: temporaryPaths.assetsDirectory.appendingPathComponent("plugin.json"))
             try SettingsStore(paths: temporaryPaths).save(["balanced": test.options])
             let template = try String(contentsOf: repository.appendingPathComponent("configs/balanced.conf"), encoding: .utf8)
-            let rendered = try GraphRenderer(paths: temporaryPaths).render(profile: "balanced", template: template)
+            let rendered = try GraphRenderer(paths: temporaryPaths).render(
+                profile: "balanced", template: template, includeVirtualSinks: false
+            )
             let content = rendered.components(separatedBy: .newlines).filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("#") }.joined(separator: "\n")
             guard let config = try JSONSupport.decode(Data(content.utf8)) as? [String: Any],
                   let rules = config["node.filter-graph.rules"] as? [[String: Any]] else {
