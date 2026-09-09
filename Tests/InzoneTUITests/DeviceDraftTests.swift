@@ -1,0 +1,149 @@
+import Testing
+import SwiftTUI
+import InzoneCore
+@testable import SwiftTUIEssentials
+@testable import InzoneTUI
+
+@MainActor
+struct DeviceDraftTests {
+    private func model() -> TerminalModel {
+        let fields = Dictionary(uniqueKeysWithValues: InzoneDevice.fields.map { ($0.name, $0.values[0]) })
+        return TerminalModel(previewDeviceSnapshot: [
+            "connected": true,
+            "battery": ["percent": 85, "state": "discharging"],
+            "firmware": ["headset": "1.2.3.4", "dongle": "5.6.7.8"],
+            "fields": fields,
+        ], hostLevels: ["game_volume": 50, "chat_volume": 50, "mic_volume": 50, "mic_mute": 0])
+    }
+
+    @Test func selectionAndWorkspaceNavigationPreserveIndependentChanges() {
+        let model = model()
+        model.adjustDeviceValue(at: 0, direction: 1)
+        model.adjustDeviceValue(at: 1, direction: 1)
+        #expect(model.pendingDeviceCount == 2)
+        #expect(model.pendingDeviceValue(at: 0) == 1)
+        #expect(model.pendingDeviceValue(at: 1) == 2)
+        model.selectRow(0)
+        #expect(model.devicePending == 1)
+        _ = model.handle(KeyPress(key: .downArrow, characters: ""), terminate: {})
+        #expect(model.devicePending == 2)
+        model.navigate(to: .profiles)
+        model.navigate(to: .device)
+        #expect(model.pendingDeviceCount == 2)
+    }
+
+    @Test func adjustmentsRespectLimitsAndReturningToOriginalRemovesDraft() {
+        let model = model()
+        model.adjustDeviceValue(at: 0, direction: -1)
+        #expect(model.pendingDeviceCount == 0)
+        for _ in 0..<10 { model.adjustDeviceValue(at: 0, direction: 1) }
+        #expect(model.devicePending == 2)
+        model.adjustDeviceValue(at: 0, direction: -1)
+        model.adjustDeviceValue(at: 0, direction: -1)
+        #expect(model.devicePending == nil)
+        #expect(model.pendingDeviceCount == 0)
+        model.adjustDeviceValue(at: -1, direction: 1)
+        model.adjustDeviceValue(at: 999, direction: 1)
+        #expect(model.pendingDeviceCount == 0)
+    }
+
+    @Test func discardClearsAllChangesAndBusyProtectsDrafts() {
+        let model = model()
+        model.adjustDeviceValue(at: 0, direction: 1)
+        model.adjustDeviceValue(at: 1, direction: 1)
+        model.busy = true
+        model.resetDeviceChanges()
+        model.adjustDeviceValue(at: 0, direction: 1)
+        model.selectRow(0)
+        model.applyDeviceChanges()
+        #expect(model.pendingDeviceCount == 2)
+        #expect(model.pendingDeviceValue(at: 0) == 1)
+        #expect(model.deviceIndex == 1)
+        model.busy = false
+        model.resetDeviceChanges()
+        #expect(model.pendingDeviceCount == 0)
+    }
+
+    @Test func previewRefreshAndApplyCannotFalselyConfirmDrafts() async {
+        let model = model()
+        model.adjustDeviceValue(at: 0, direction: 1)
+        await model.refresh()
+        model.applyDeviceChanges()
+        #expect(model.pendingDeviceValue(at: 0) == 1)
+        #expect(model.pendingDeviceCount == 1)
+        #expect(!model.busy)
+    }
+
+    @Test func everyDeviceSettingRemainsReachableAcrossSections() {
+        let model = model()
+        let keys = InzoneDevice.fields.map(\.name) + ["game_volume", "chat_volume", "mic_volume", "mic_mute"]
+        var reachable = Set<Int>()
+        for section in TerminalDeviceSection.allCases {
+            model.selectDeviceSection(section)
+            for index in model.deviceSectionIndices {
+                #expect(TerminalDeviceSection.section(for: keys[index]) == section)
+                reachable.insert(index)
+                model.selectRow(index)
+                #expect(model.deviceSection == section)
+                #expect(model.deviceIndex == index)
+            }
+        }
+        #expect(reachable == Set(keys.indices))
+        model.selectDeviceSection(.info)
+        #expect(model.deviceSectionIndices.isEmpty)
+        for (index, key) in keys.enumerated() {
+            model.selectRow(index)
+            #expect(model.deviceSection == TerminalDeviceSection.section(for: key))
+        }
+    }
+
+    @Test func connectedDeviceSectionsPreserveActionsAtMinimumViewport() {
+        let model = model()
+        for section in TerminalDeviceSection.allCases {
+            model.selectDeviceSection(section)
+            let rendered = ViewRenderer.render(
+                TerminalRoot(model: model).frame(width: 72, height: 24),
+                proposedSize: ProposedViewSize(columns: 72, rows: 24))
+            #expect(rendered.size.columns == 72)
+            #expect(rendered.size.rows == 24)
+            for label in ["Noise", "Sound", "Mic", "System", "Info", "Back", "Discard", "Refresh", "Apply"] {
+                #expect(rendered.text.contains(label), "\(section): missing \(label)")
+            }
+            if section == .microphone { #expect(rendered.text.contains("Test mic")) }
+        }
+    }
+
+    @Test func pointerAdjustmentsAndSectionChangesPreserveDraftsUntilDiscard() throws {
+        let model = model()
+        let runtime = StateRuntime()
+
+        func tap(_ title: String, onRowContaining rowLabel: String? = nil) throws {
+            let block = try #require(runtime.block(
+                from: TerminalRoot(model: model).frame(width: 72, height: 24),
+                in: RenderProposal(columns: 72, rows: 24)))
+            let row = try #require(block.lines.firstIndex { line in
+                line.contains(title) && (rowLabel == nil || line.contains(rowLabel!))
+            })
+            let line = block.lines[row]
+            let range = try #require(line.range(of: title))
+            let location = Point(column: line.distance(from: line.startIndex, to: range.lowerBound), row: row)
+            _ = runtime.dispatch(PointerPress(button: .left, location: location, phase: .down))
+            _ = runtime.dispatch(PointerPress(button: .left, location: location, phase: .up))
+        }
+
+        try tap("+", onRowContaining: "Noise control")
+        #expect(model.pendingDeviceValue(at: 0) == 1)
+        try tap("Sound")
+        #expect(model.deviceSection == .sound)
+        #expect(model.pendingDeviceCount == 1)
+        try tap("Mic", onRowContaining: "Noise")
+        #expect(model.deviceSection == .microphone)
+        try tap("Off", onRowContaining: "Microphone mute")
+        let microphoneMuteIndex = InzoneDevice.fields.count + 3
+        #expect(model.pendingDeviceValue(at: microphoneMuteIndex) == 1)
+        #expect(model.pendingDeviceCount == 2)
+        try tap("Discard")
+        #expect(model.pendingDeviceCount == 0)
+        #expect(!model.busy)
+    }
+}

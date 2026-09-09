@@ -150,6 +150,82 @@ final class DeviceTests: XCTestCase {
         wait(for: [complete], timeout: 3)
     }
 
+    func testSetIgnoresReadResponseWithMatchingTransaction() throws {
+        try withMockDevice(server: { descriptor in
+            guard let request = Self.receive(descriptor) else { return }
+            XCTAssertEqual(request[10], 2)
+            let unrelated = Self.response(request, kind: 0x10, payload: [0, 20, 255, 0])
+            let acknowledgement = Self.response(request, kind: 0x20, payload: [1, 20, 255, 0])
+            Self.send(descriptor, bytes: unrelated + acknowledgement)
+        }) { device in
+            XCTAssertEqual(try device.transact("ambient", kind: 2, payload: Data([1, 20, 255, 0])),
+                           Data([1, 20, 255, 0]))
+        }
+    }
+
+    func testFieldVerificationWaitsForUpdatedReadbackWithoutRewriting() throws {
+        try withMockDevice(server: { descriptor in
+            guard let initial = Self.receive(descriptor) else { return }
+            Self.send(descriptor, bytes: Self.response(initial, payload: [0, 20, 255, 0]))
+            guard let write = Self.receive(descriptor) else { return }
+            XCTAssertEqual(write[10], 2)
+            XCTAssertEqual(Array(write[13..<17]), [1, 20, 255, 0])
+            Self.send(descriptor, bytes: Self.response(write, kind: 0x20, payload: [1, 20, 255, 0]))
+            for observed: UInt8 in [0, 1] {
+                guard let query = Self.receive(descriptor) else { return }
+                XCTAssertEqual(query[10], 1, "Verification must not repeat SET.")
+                Self.send(descriptor, bytes: Self.response(query, payload: [observed, 20, 255, 0]))
+            }
+        }) { device in
+            XCTAssertNoThrow(try device.setField("anc", value: 1, verificationTimeout: 0.5))
+        }
+    }
+
+    func testPersistentMismatchReportsFieldRequestedAndObservedValues() throws {
+        try withMockDevice(server: { descriptor in
+            guard let initial = Self.receive(descriptor) else { return }
+            Self.send(descriptor, bytes: Self.response(initial, payload: [0, 20, 255, 0]))
+            guard let write = Self.receive(descriptor) else { return }
+            Self.send(descriptor, bytes: Self.response(write, kind: 0x20, payload: [1, 20, 255, 0]))
+            let deadline = ProcessInfo.processInfo.systemUptime + 2
+            while ProcessInfo.processInfo.systemUptime < deadline {
+                var descriptorStatus = pollfd(fd: descriptor, events: Int16(POLLIN), revents: 0)
+                if Glibc.poll(&descriptorStatus, 1, 100) <= 0 { continue }
+                var query = [UInt8](repeating: 0, count: 64)
+                let count = Glibc.read(descriptor, &query, query.count)
+                if count <= 0 { return }
+                XCTAssertEqual(count, 64)
+                XCTAssertEqual(query[10], 1)
+                Self.send(descriptor, bytes: Self.response(query, payload: [0, 20, 255, 0]))
+            }
+        }) { device in
+            XCTAssertThrowsError(try device.setField("anc", value: 1, verificationTimeout: 0.12)) { error in
+                XCTAssertTrue(error.localizedDescription.contains("Unconfirmed anc:"))
+                XCTAssertTrue(error.localizedDescription.contains("requested 1, observed 0"))
+            }
+        }
+    }
+
+    private func withMockDevice(server operation: @escaping @Sendable (Int32) -> Void,
+                                body: (InzoneDevice) throws -> Void) throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        var descriptors: [Int32] = [-1, -1]
+        guard socketpair(AF_UNIX, Int32(SOCK_SEQPACKET.rawValue), 0, &descriptors) == 0 else {
+            XCTFail("Cannot create mock HID transport.")
+            return
+        }
+        let device = try InzoneDevice(home: directory, ownedDescriptor: descriptors[0])
+        let server = descriptors[1]
+        let complete = expectation(description: "Mock HID exchange completed")
+        DispatchQueue.global().async {
+            defer { _ = Glibc.close(server); complete.fulfill() }
+            operation(server)
+        }
+        defer { device.close(); wait(for: [complete], timeout: 3) }
+        try body(device)
+    }
+
     private static func receive(_ descriptor: Int32) -> [UInt8]? {
         var polling = pollfd(fd: descriptor, events: Int16(POLLIN), revents: 0)
         guard Glibc.poll(&polling, 1, 2000) > 0 else { XCTFail("Mock device did not receive a command."); return nil }

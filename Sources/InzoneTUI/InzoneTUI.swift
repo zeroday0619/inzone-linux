@@ -18,9 +18,9 @@ public enum InzoneTerminal {
 
     /// Renders the initial screen without device access or a terminal session.
     @MainActor
-    public static func preview(columns: Int = 80, rows: Int = 24) -> String {
+    public static func preview(columns: Int = 80, rows: Int = 24, touchOptimized: Bool = true) -> String {
         ViewRenderer.render(
-            TerminalRoot(model: TerminalModel(worker: nil))
+            TerminalRoot(model: TerminalModel(worker: nil), touchOptimized: touchOptimized)
                 .frame(width: columns, height: rows),
             proposedSize: ProposedViewSize(columns: columns, rows: rows)
         ).text
@@ -30,8 +30,8 @@ public enum InzoneTerminal {
 private let profileNames = ["fps", "music", "voice", "balanced", "surround", "restore"]
 private let profileTitles = ["FPS", "Music", "Voice", "Balanced", "Surround", "Restore Defaults"]
 private let profileDescriptions = [
-    "Reduced bass / Footstep emphasis", "Original sound / Stability priority", "Voice clarity / Mic low-cut",
-    "No EQ / Balanced tuning", "Sony HRTF / 7.1 input", "Restores saved tone and latency. Preserves Game/Chat balance.",
+    "Less bass. Clearer footsteps.", "Original sound. Stability first.", "Clearer voices. Less microphone rumble.",
+    "Neutral sound without extra EQ.", "Spatial sound with Sony HRTF.", "Restores saved tone and latency. Game/Chat balance stays unchanged.",
 ]
 private let equalizerFrequencies = ["31.5", "63", "125", "250", "500", "1k", "2k", "4k", "8k", "16k"]
 
@@ -92,9 +92,11 @@ private struct DeviceRow: Sendable {
 
 private struct DeviceScreenState: Sendable {
     var rows: [DeviceRow] = []
-    var battery = "Battery: ?"
-    var firmware = "Firmware: ?"
+    var status = TerminalDeviceStatus()
+    var battery: String { status.batteryLine }
+    var firmware: String { status.firmwareLine }
     var message = "Reading device status..."
+    var hasIssue = false
     var monitoring = false
 }
 
@@ -206,26 +208,22 @@ private actor TerminalWorker {
         do {
             if device == nil { device = try InzoneDevice(home: controller.paths.home) }
             let snapshot = try device!.snapshot()
+            result.status = TerminalDeviceStatus(snapshot: snapshot)
             let fields = snapshot["fields"] as? [String: Int] ?? [:]
             result.rows = InzoneDevice.fields.compactMap { field in
                 guard let value = fields[field.name] else { return nil }
                 return DeviceRow(key: field.name, label: field.label, value: value,
                                  values: field.values, labels: field.labels)
             }
-            if let battery = snapshot["battery"] as? [String: Any] {
-                let percent = battery["percent"].map { String(describing: $0) } ?? "?"
-                result.battery = "Battery: \(percent)% · " + ((battery["state"] as? String) == "charging" ? "Charging" : "Discharging")
-            }
-            if let firmware = snapshot["firmware"] as? [String: String] {
-                result.firmware = "Firmware: Headset \(firmware["headset"] ?? "?") / Dongle \(firmware["dongle"] ?? "?")"
-            }
             if snapshot["connected"] as? Bool != true { messages.append("Waiting for headset connection...") }
         } catch {
+            result.status.connection = .unavailable
             device?.close()
             device = nil
             messages.append(error.localizedDescription)
         }
         do { result.rows += try hostRows() } catch { messages.append(error.localizedDescription) }
+        result.hasIssue = !messages.isEmpty
         result.message = messages.isEmpty ? "←→: Select value, press Enter to apply." : messages.joined(separator: " · ")
         result.monitoring = monitor.isRunning
         return result
@@ -279,17 +277,33 @@ private enum PromptPurpose { case hki, ba(String), ruleApp, ruleProfile(String),
 final class TerminalModel {
     private let worker: TerminalWorker?
     var screen = TerminalScreen.profiles
+    var showsProfileControls = false
+    var showsSystemControls = false
     var selected = 0
-    var message = "Select and press Enter to apply."
+    var message = "Ready"
     var busy = false
     var equalizer = Array(repeating: 0.0, count: 10)
     var equalizerIndex = 0
     var presetIndex = 0
     var deviceIndex = 0
-    var devicePending: Int?
+    var deviceSection = TerminalDeviceSection.noise
+    private var pendingDeviceValues: [String: Int] = [:]
+    var devicePending: Int? { pendingDeviceValue(at: deviceIndex) }
+    var pendingDeviceCount: Int { pendingDeviceValues.count }
+    var canApplyDeviceChanges: Bool {
+        !pendingDeviceValues.isEmpty && pendingDeviceValues.allSatisfy { key, value in
+            deviceRows.contains { $0.key == key && $0.values.contains(value) }
+        }
+    }
     var automationIndex = 0
     var promptText = ""
     var promptTitle = ""
+    var promptActionTitle: String {
+        switch promptPurpose {
+        case .ba(_), .rulePriority(_, _): "Save"
+        default: "Continue"
+        }
+    }
     private var promptPurpose = PromptPurpose.hki
     private var promptReturn = TerminalScreen.profiles
     private var profileState = ProfileScreenState()
@@ -300,20 +314,140 @@ final class TerminalModel {
 
     fileprivate init(worker: TerminalWorker?) { self.worker = worker }
     init() { worker = nil }
+    init(previewDeviceSnapshot snapshot: [String: Any], hostLevels: [String: Int] = [:]) {
+        worker = nil
+        screen = .device
+        deviceState.status = TerminalDeviceStatus(snapshot: snapshot)
+        let fields = snapshot["fields"] as? [String: Int] ?? [:]
+        deviceState.rows = InzoneDevice.fields.compactMap { field in
+            guard let value = fields[field.name] else { return nil }
+            return DeviceRow(key: field.name, label: field.label, value: value,
+                             values: field.values, labels: field.labels)
+        }
+        deviceState.rows += [("game_volume", "Game output volume"), ("chat_volume", "Chat output volume"),
+                             ("mic_volume", "Microphone input volume"), ("mic_mute", "Microphone mute")].compactMap { key, label in
+            guard let value = hostLevels[key] else { return nil }
+            return DeviceRow(key: key, label: label, value: value,
+                             values: key == "mic_mute" ? [0, 1] : Array(0...100),
+                             labels: key == "mic_mute" ? ["Off", "On"] : [], host: true)
+        }
+        deviceState.message = ""
+    }
     var profile: String { profileNames[selected] }
     var title: String { profileTitles[selected] }
     fileprivate var options: DisplayOptions { profileState.options[profile] ?? DisplayOptions() }
-    fileprivate var current: String {
-        let name = profileState.current == "original" ? "restore" : profileState.current
-        return profileNames.firstIndex(of: name).map { profileTitles[$0] } ?? name
-    }
     fileprivate var deviceRows: [DeviceRow] { deviceState.rows }
     fileprivate var deviceSummary: DeviceScreenState { deviceState }
     fileprivate var automationRules: [AutomationDisplayRule] { automationState.rules }
     var automationActive: Bool { automationState.active }
+    var deviceSectionIndices: [Int] {
+        deviceRows.indices.filter { TerminalDeviceSection.section(for: deviceRows[$0].key) == deviceSection }
+    }
 
-    func isActive(_ index: Int) -> Bool {
-        profileState.current == profileNames[index] || (index == 5 && profileState.current == "original")
+    func selectDeviceSection(_ section: TerminalDeviceSection) {
+        guard !busy else { return }
+        deviceSection = section
+        if let index = deviceSectionIndices.first { deviceIndex = index }
+    }
+
+    func moveDeviceSection(by direction: Int) {
+        guard !busy, screen == .device, direction != 0,
+              let index = TerminalDeviceSection.allCases.firstIndex(of: deviceSection) else { return }
+        let next = min(TerminalDeviceSection.allCases.count - 1, max(0, index + (direction > 0 ? 1 : -1)))
+        if next != index { selectDeviceSection(TerminalDeviceSection.allCases[next]) }
+    }
+    var canEditProfile: Bool { profile != "restore" && (worker == nil || profileState.options[profile] != nil) }
+
+    /// Workspace navigation is unavailable while an editor owns an unsaved draft.
+    func navigate(to destination: TerminalScreen) {
+        guard !busy, screen != .prompt, screen != .equalizer, screen != .presets,
+              [.profiles, .device, .automation].contains(destination), screen != destination else { return }
+        if screen != .profiles {
+            _ = handle(KeyPress(key: .escape, characters: ""), terminate: {})
+        }
+        if destination == .device { _ = handle(KeyPress(key: "h", characters: "h"), terminate: {}) }
+        if destination == .automation { _ = handle(KeyPress(key: "u", characters: "u"), terminate: {}) }
+    }
+
+    /// Selection remains separate from applying settings to prevent accidental writes.
+    func selectRow(_ index: Int) {
+        guard !busy else { return }
+        switch screen {
+        case .profiles:
+            guard profileNames.indices.contains(index) else { return }
+            selected = index
+            initialSelection = false
+        case .equalizer:
+            guard equalizer.indices.contains(index) else { return }
+            equalizerIndex = index
+        case .presets:
+            guard SonyPresets.names.indices.contains(index) else { return }
+            presetIndex = index
+        case .device:
+            guard deviceRows.indices.contains(index) else { return }
+            deviceIndex = index
+            deviceSection = TerminalDeviceSection.section(for: deviceRows[index].key)
+        case .automation:
+            guard automationRules.indices.contains(index) else { return }
+            automationIndex = index
+        case .prompt: break
+        }
+    }
+
+    func adjustEqualizer(_ index: Int, by amount: Double) {
+        guard !busy, screen == .equalizer, equalizer.indices.contains(index) else { return }
+        equalizerIndex = index
+        equalizer[index] = min(12, max(-12, equalizer[index] + amount))
+    }
+
+    func setEqualizerGain(at index: Int, to value: Double) {
+        guard !busy, screen == .equalizer, equalizer.indices.contains(index), value.isFinite else { return }
+        equalizerIndex = index
+        equalizer[index] = min(12, max(-12, value.rounded()))
+    }
+
+    func pendingDeviceValue(at index: Int) -> Int? {
+        guard deviceRows.indices.contains(index) else { return nil }
+        return pendingDeviceValues[deviceRows[index].key]
+    }
+
+    func resetDeviceChanges() {
+        guard !busy else { return }
+        pendingDeviceValues.removeAll()
+        message = "Changes discarded."
+    }
+
+    func adjustDeviceValue(at index: Int, direction: Int) {
+        guard !busy, screen == .device, deviceRows.indices.contains(index), direction != 0 else { return }
+        let row = deviceRows[index]
+        guard !row.values.isEmpty else { return }
+        deviceIndex = index
+        deviceSection = TerminalDeviceSection.section(for: row.key)
+        let current = pendingDeviceValues[row.key] ?? row.value
+        let position = row.values.indices.min(by: { abs(row.values[$0] - current) < abs(row.values[$1] - current) }) ?? 0
+        let value = row.values[min(row.values.count - 1, max(0, position + (direction > 0 ? 1 : -1)))]
+        pendingDeviceValues[row.key] = value == row.value ? nil : value
+    }
+
+    func applyDeviceChanges() {
+        guard !busy, screen == .device, !pendingDeviceValues.isEmpty else { return }
+        guard canApplyDeviceChanges else {
+            message = "Some settings are unavailable. Refresh before applying."
+            return
+        }
+        let changes = deviceRows.compactMap { row -> (DeviceRow, Int)? in
+            guard let value = pendingDeviceValues[row.key] else { return nil }
+            return (row, value)
+        }
+        guard !changes.isEmpty else { return }
+        perform("Device settings updated.") { worker in
+            for (row, value) in changes { try await worker.setDevice(row, value: value) }
+        }
+    }
+
+    func cancelPrompt() {
+        guard !busy, screen == .prompt else { return }
+        screen = promptReturn
     }
 
     fileprivate var details: [String] {
@@ -344,11 +478,14 @@ final class TerminalModel {
                 guard screen == .device else { return }
                 let previousKey = deviceRows.indices.contains(deviceIndex) ? deviceRows[deviceIndex].key : nil
                 deviceState = state
+                // Readback clears confirmed changes while preserving unavailable or failed settings.
+                for row in state.rows where pendingDeviceValues[row.key] == row.value {
+                    pendingDeviceValues.removeValue(forKey: row.key)
+                }
                 if let index = state.rows.firstIndex(where: { $0.key == previousKey }) {
                     deviceIndex = index
                 } else {
                     deviceIndex = min(deviceIndex, max(0, state.rows.count - 1))
-                    devicePending = nil
                 }
             case .automation:
                 let state = try await worker.automation()
@@ -406,6 +543,7 @@ final class TerminalModel {
     }
 
     func submitPrompt() {
+        guard !busy, screen == .prompt else { return }
         var value = promptText.trimmingCharacters(in: .whitespacesAndNewlines)
         if case .rulePriority = promptPurpose, value.isEmpty { value = "0" }
         guard !value.isEmpty else { screen = promptReturn; return }
@@ -439,13 +577,18 @@ final class TerminalModel {
         }
         if busy { return .handled }
         if key.key == .escape || character == "q" {
+            if screen == .profiles, showsProfileControls {
+                if showsSystemControls { showsSystemControls = false; return .handled }
+                showsProfileControls = false
+                return .handled
+            }
             if screen == .profiles { terminate() }
             else {
                 if screen == .device, let worker {
                     Task { await worker.stopMonitor(); await worker.closeDevice() }
                 }
                 screen = .profiles
-                message = "Select and press Enter to apply."
+                message = "Ready"
             }
             return .handled
         }
@@ -461,7 +604,7 @@ final class TerminalModel {
                 let name = profile
                 perform("Applied: \(title)") { try await $0.activate(name) }
             } else if character == "h" {
-                screen = .device; devicePending = nil
+                screen = .device
                 Task { await refresh() }
             } else if character == "u" {
                 screen = .automation
@@ -502,23 +645,18 @@ final class TerminalModel {
                 perform("Sony preset applied successfully") { try await $0.preset(name, name: preset) }
             } else { return .ignored }
         case .device:
-            if character == "r" { devicePending = nil; Task { await refresh() } }
+            if character == "r" { Task { await refresh() } }
             else if character == "t" {
                 perform("Microphone test state changed", onSuccess: {
                     self.deviceState.monitoring = self.worker?.monitoring() ?? false
                 }, refreshAfter: false) { _ = try await $0.toggleMonitor() }
             } else if !deviceRows.isEmpty {
-                if up { deviceIndex = (deviceIndex + deviceRows.count - 1) % deviceRows.count; devicePending = nil }
-                else if down { deviceIndex = (deviceIndex + 1) % deviceRows.count; devicePending = nil }
+                if up { selectRow((deviceIndex + deviceRows.count - 1) % deviceRows.count) }
+                else if down { selectRow((deviceIndex + 1) % deviceRows.count) }
                 else if key.key == .leftArrow || key.key == .rightArrow {
-                    let row = deviceRows[deviceIndex], current = devicePending ?? deviceRows[deviceIndex].value
-                    let index = row.values.indices.min(by: { abs(row.values[$0] - current) < abs(row.values[$1] - current) }) ?? 0
-                    devicePending = row.values[min(row.values.count - 1, max(0, index + (key.key == .rightArrow ? 1 : -1)))]
-                } else if enter, let value = devicePending {
-                    let row = deviceRows[deviceIndex]
-                    perform("Setting applied and verified", onSuccess: { self.devicePending = nil }) {
-                        try await $0.setDevice(row, value: value)
-                    }
+                    adjustDeviceValue(at: deviceIndex, direction: key.key == .rightArrow ? 1 : -1)
+                } else if enter {
+                    applyDeviceChanges()
                 } else { return .ignored }
             }
         case .automation:
@@ -545,10 +683,16 @@ private struct TerminalApplication: App {
 }
 
 @MainActor
-private struct TerminalRoot: View {
+struct TerminalRoot: View {
     @Environment(\.terminate) private var terminate
     @FocusState private var contentFocused: Bool
+    @State private var touchOptimized: Bool
     let model: TerminalModel
+
+    init(model: TerminalModel, touchOptimized: Bool = true) {
+        self.model = model
+        _touchOptimized = State(initialValue: touchOptimized)
+    }
 
     var body: some View {
         GeometryReader { geometry in
@@ -557,19 +701,47 @@ private struct TerminalRoot: View {
                     Text("INZONE H9 II").bold()
                     Text("Please resize terminal to at least 72 columns × 24 rows.")
                     Text("Q / Esc: Quit")
+                    TerminalAction(title: "Quit", width: 8) { model.requestTermination { terminate() } }
                 } else {
-                    screen(rows: geometry.rows - 2)
+                    header(columns: geometry.columns - 2)
+                    VStack(alignment: .leading, spacing: 0) {
+                        if touchOptimized {
+                            HStack(alignment: .top, spacing: 2) {
+                                if geometry.columns >= 110 {
+                                    TerminalSidebar(model: model, rows: geometry.rows - 7)
+                                }
+                                TouchTerminalScreen(model: model,
+                                    columns: geometry.columns - (geometry.columns >= 110 ? 32 : 2), rows: geometry.rows - 7)
+                            }
+                        } else {
+                            screen(rows: geometry.rows - 7)
+                        }
+                    }
+                    .frame(width: geometry.columns - 2, height: geometry.rows - 7, alignment: .topLeading)
+                    .padding(.vertical, 1)
+                    footer(columns: geometry.columns - 2)
                 }
             }
             .padding(.horizontal, 1)
             .frame(width: geometry.columns, height: geometry.rows, alignment: .topLeading)
+            .foregroundStyle(TerminalTheme.text)
+            .background(TerminalTheme.background)
         }
         .focused($contentFocused)
         .onAppear { contentFocused = true }
         .onChange(of: model.screen) { _, screen in
+            model.showsProfileControls = false
+            model.showsSystemControls = false
             if screen != .prompt { contentFocused = true }
         }
         .onKeyPress { key in model.handle(key, terminate: { terminate() }) }
+        .inputEvent(PointerScrollEvent(.vertical).onRecognized { scroll in
+            guard model.screen != .prompt else { return .ignored }
+            return model.handle(
+                KeyPress(key: scroll.delta.rows < 0 ? .upArrow : .downArrow, characters: ""),
+                terminate: { terminate() }
+            )
+        })
         .onTerminate { model.requestTermination { terminate() } }
         .task {
             var ticks = 0
@@ -583,72 +755,184 @@ private struct TerminalRoot: View {
         }
     }
 
+    private var screenTitle: String {
+        switch model.screen {
+        case .profiles: "INZONE H9 II / " + (touchOptimized && model.showsProfileControls
+            ? (model.showsSystemControls ? "Device & apps" : "Controls") : "Profiles")
+        case .equalizer: "10-band EQ / " + model.title
+        case .presets: "Sony EQ Presets / " + model.title
+        case .device: "INZONE H9 II / Device Settings"
+        case .automation: "Auto Profiles / " + (model.automationActive ? "Running" : "Stopped")
+        case .prompt: "INZONE H9 II / Input"
+        }
+    }
+
+    private func header(columns: Int) -> some View {
+        let showsQuit = touchOptimized && model.screen == .profiles && !model.showsProfileControls
+        return HStack(spacing: 2) {
+            Text(screenTitle).bold().lineLimit(1)
+                .padding(.leading, 1)
+                .frame(width: columns - (showsQuit ? 28 : 18), height: 3, alignment: .leading)
+                .foregroundStyle(TerminalTheme.text)
+            if showsQuit {
+                TerminalAction(title: "Quit", width: 10, enabled: !model.busy, role: .plain) {
+                    model.requestTermination { terminate() }
+                }
+            }
+            TerminalAction(title: touchOptimized ? "Compact" : "Touch layout", width: showsQuit ? 14 : 16, role: .plain) {
+                touchOptimized.toggle()
+            }
+        }
+        .frame(width: columns, height: 3)
+        .background(TerminalTheme.background)
+    }
+
+    private var footerMessage: String {
+        if model.busy { return model.message }
+        if model.screen == .profiles, model.showsProfileControls {
+            return model.showsSystemControls ? "Device settings and application rules."
+                : "Changes apply immediately to " + model.title + "."
+        }
+        if model.screen == .equalizer { return "Unsaved EQ draft · Save & Apply commits changes." }
+        if model.screen == .device, model.deviceSummary.monitoring { return "Microphone monitor playing · Tap Stop mic to end." }
+        if model.screen == .device, model.message.hasPrefix("Failed:") { return model.message }
+        if model.screen == .device, model.pendingDeviceCount > 0 {
+            if !model.canApplyDeviceChanges { return "Some settings are unavailable. Refresh or discard your changes." }
+            return "\(model.pendingDeviceCount) unsaved change\(model.pendingDeviceCount == 1 ? "" : "s"). Apply or discard when ready."
+        }
+        if model.screen == .device, model.deviceSummary.hasIssue { return model.deviceSummary.message }
+        return model.message
+    }
+
+    private var shortcuts: String {
+        switch model.screen {
+        case .profiles: model.showsProfileControls
+            ? (model.showsSystemControls ? "H Device · U Automation · I Import · Q / Esc Back"
+                : "Tap a value to change · E Equalizer · S Presets · Q / Esc Back")
+            : "↑↓ Select · Enter Apply · Q / Esc Quit"
+        case .equalizer: "↑↓ Band · ←→ Gain · Enter Save & Apply · Q / Esc Cancel"
+        case .presets: "Tap / ↑↓ Select · Enter Apply · Q / Esc Cancel"
+        case .device: "Swipe ←→ Tabs · ↑↓ Item · ←→ Value · Enter Apply · Esc Back"
+        case .automation: "A Add/Edit · D Delete · Space Toggle · Q / Esc Back"
+        case .prompt: "Enter " + model.promptActionTitle + " · Esc Cancel"
+        }
+    }
+
+    private func footer(columns: Int) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text((model.busy ? "Working  " : "") + terminalText(footerMessage)).lineLimit(1)
+                .foregroundStyle(footerMessage.hasPrefix("Failed:") ? TerminalTheme.danger : TerminalTheme.muted)
+            Text(shortcuts).lineLimit(1).foregroundStyle(TerminalTheme.muted)
+        }
+        .frame(width: columns, height: 2, alignment: .leading)
+        .background(TerminalTheme.background)
+    }
+
     @ViewBuilder
     private func screen(rows: Int) -> some View {
         switch model.screen {
         case .profiles:
-            Text("INZONE H9 II / Profiles").bold().foregroundStyle(.cyan)
-            line("Active: " + model.current)
             Divider()
             ForEach(0..<6) { index in
-                row("\(index + 1)  \(profileTitles[index])" + (model.isActive(index) ? "  [Active]" : ""), selected: index == model.selected)
+                row(profileTitles[index], selected: index == model.selected)
+                    .onTapGesture { model.selectRow(index) }
             }
             Divider()
-            line(profileDescriptions[model.selected])
-            ForEach(Array(model.details.enumerated()), id: \.offset) { _, detail in line(detail) }
+            ProfileSummary(model: model)
+            ForEach(Array((model.profile == "restore" ? model.details : Array(model.details.dropLast(2))).enumerated()), id: \.offset) { _, detail in line(detail) }
             Spacer(minLength: 0)
-            line("D: DRC  A: Output ALC  M: Mic AGC  P: Standard/Personal")
-            line("E: EQ  S: Presets  H: Device  U: Automation  I: Personalization")
-            line(model.message)
-            line("↑↓ / J K: Select  1–6: Select  Enter: Apply  Q / Esc: Quit")
+            HStack(spacing: 1) {
+                action("D: DRC", character: "d")
+                action("A: Output ALC", character: "a")
+                action("M: Mic AGC", character: "m")
+                action("P: HRTF", character: "p")
+            }
+            HStack(spacing: 1) {
+                action("E: EQ", character: "e")
+                action("S: Presets", character: "s")
+                action("H: Device", character: "h")
+                action("U: Automation", character: "u")
+                action("I: Import", character: "i")
+            }
+            HStack(spacing: 1) {
+                action("Apply", key: .return)
+                action("Quit", character: "q")
+            }
         case .equalizer:
-            Text("10-band EQ / " + model.title).bold()
             Divider()
             ForEach(0..<10) { index in
-                row(String(format: "%5@ Hz   %+5.1f dB", equalizerFrequencies[index], model.equalizer[index]), selected: index == model.equalizerIndex)
+                HStack(spacing: 1) {
+                    row(String(format: "%5@ Hz   %+5.1f dB", equalizerFrequencies[index], model.equalizer[index]), selected: index == model.equalizerIndex)
+                        .frame(width: 24, alignment: .leading)
+                        .onTapGesture { model.selectRow(index) }
+                    control("−") { model.adjustEqualizer(index, by: -1) }
+                    Text(equalizerMeter(model.equalizer[index])).foregroundStyle(.cyan)
+                    control("+") { model.adjustEqualizer(index, by: 1) }
+                }
             }
             Spacer(minLength: 0)
-            line("↑↓: Band  ←→: 1 dB  0: Reset")
-            line("Enter: Save & Apply  Esc / Q: Cancel")
+            HStack(spacing: 1) {
+                action("Save & Apply", key: .return)
+                action("Reset", character: "0")
+                action("Cancel", key: .escape)
+            }
         case .presets:
-            Text("Sony EQ Presets / " + model.title).bold()
             Divider()
             ForEach(Array(SonyPresets.names.enumerated()), id: \.offset) { index, name in
                 row(SonyPresets.labels[name] ?? name, selected: index == model.presetIndex)
+                    .onTapGesture { model.selectRow(index) }
             }
             Spacer(minLength: 0)
             line("Sony presets replace existing Linux tone EQ.")
-            line("↑↓: Select · Enter: Apply · Esc / Q: Cancel")
+            HStack(spacing: 1) {
+                action("Apply preset", key: .return)
+                action("Cancel", key: .escape)
+            }
         case .device:
-            Text("INZONE H9 II / Device Settings").bold()
             line(model.deviceSummary.battery)
             line(model.deviceSummary.firmware)
             line("Device settings apply globally across all profiles.")
             Divider()
-            let count = max(1, rows - 10)
+            let count = max(1, rows - 6)
             let first = max(0, min(model.deviceIndex - count + 1, max(0, model.deviceRows.count - count)))
             ForEach(Array(model.deviceRows.enumerated().dropFirst(first).prefix(count)), id: \.element.key) { index, item in
-                row(item.label + ": " + item.display(index == model.deviceIndex ? model.devicePending : nil)
-                    + (index == model.deviceIndex && model.devicePending != nil ? " *" : ""), selected: index == model.deviceIndex)
+                row(item.label + ": " + item.display(model.pendingDeviceValue(at: index))
+                    + (model.pendingDeviceValue(at: index) != nil ? " *" : ""), selected: index == model.deviceIndex)
+                    .onTapGesture { model.selectRow(index) }
             }
             Spacer(minLength: 0)
-            line(model.deviceSummary.monitoring ? "Microphone test playing (up to 30s)" : model.deviceSummary.message)
-            line(model.message)
-            line("↑↓: Item  ←→: Value  Enter: Apply  R: Refresh")
-            line("T: Toggle Mic Monitor  Esc / Q: Back")
+            HStack(spacing: 1) {
+                action("↑", key: .upArrow)
+                action("↓", key: .downArrow)
+                action("−", key: .leftArrow)
+                action("+", key: .rightArrow)
+                action("Apply", key: .return)
+                action("R: Refresh", character: "r")
+            }
+            HStack(spacing: 1) {
+                action(model.deviceSummary.monitoring ? "T: Stop monitor" : "T: Test microphone", character: "t")
+                action("Back", key: .escape)
+            }
         case .automation:
-            Text("Auto Profiles / " + (model.automationActive ? "Running" : "Stopped")).bold()
             Divider()
-            let count = max(1, rows - 7)
+            let count = max(1, rows - 3)
             let first = max(0, model.automationIndex - count + 1)
             if model.automationRules.isEmpty { line("No registered rules.") }
             ForEach(Array(model.automationRules.enumerated().dropFirst(first).prefix(count)), id: \.element.app) { index, rule in
                 row("\(rule.priority)  \(rule.app) → \(rule.profile)", selected: index == model.automationIndex)
+                    .onTapGesture { model.selectRow(index) }
             }
             Spacer(minLength: 0)
-            line(model.message)
-            line("A: Add/Edit Rule  D: Delete  Space: Toggle Auto-switch")
-            line("Higher priority first · Ties in list order · Esc / Q: Back")
+            HStack(spacing: 1) {
+                action("↑", key: .upArrow)
+                action("↓", key: .downArrow)
+                action("A: Add/Edit", character: "a")
+                action("D: Delete", character: "d")
+            }
+            HStack(spacing: 1) {
+                action(model.automationActive ? "Stop automation" : "Start automation", character: " ")
+                action("Back", key: .escape)
+            }
         case .prompt:
             PromptView(model: model)
         }
@@ -658,26 +942,432 @@ private struct TerminalRoot: View {
         Text(terminalText(value)).lineLimit(1)
     }
 
-    @ViewBuilder
+    private func action(_ title: String, character: Character) -> some View {
+        action(title, key: KeyEquivalent(character), characters: String(character))
+    }
+
+    private func action(_ title: String, key: KeyEquivalent, characters: String = "") -> some View {
+        control(title) {
+            _ = model.handle(KeyPress(key: key, characters: characters), terminate: { terminate() })
+        }
+    }
+
+    private func control(_ title: String, action: @escaping () -> Void) -> some View {
+        TerminalAction(title: title, width: RunGroup(title).measure().maximumContentColumns + 4,
+            height: 1, action: action)
+    }
+
+    private func equalizerMeter(_ value: Double) -> String {
+        let position = Int(value.rounded()) + 12
+        return String((0...24).map { index -> Character in
+            if index == position { return "●" }
+            return index == 12 ? "│" : "─"
+        })
+    }
+
     private func row(_ value: String, selected: Bool) -> some View {
-        if selected { Text("> " + terminalText(value)).bold().foregroundStyle(.cyan).lineLimit(1) }
-        else { Text("  " + terminalText(value)).lineLimit(1) }
+        HStack(spacing: 0) {
+            Text(terminalText(value)).lineLimit(1)
+            Spacer(minLength: 0)
+        }
+        .foregroundStyle(selected ? TerminalTheme.background : TerminalTheme.text)
+        .background(selected ? TerminalTheme.accent : TerminalTheme.background)
+    }
+}
+
+@MainActor
+private struct TouchTerminalScreen: View {
+    @Environment(\.terminate) private var terminate
+    let model: TerminalModel
+    let columns: Int
+    let rows: Int
+
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            content
+        }
+        .frame(width: columns, height: rows, alignment: .topLeading)
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        switch model.screen {
+        case .profiles:
+            if model.showsProfileControls, model.showsSystemControls {
+                Text("Device and application settings").foregroundStyle(TerminalTheme.muted)
+                Spacer(minLength: 0)
+                target("Device", width: columns, role: .plain, leadingAligned: true) { dispatch("h", characters: "h") }
+                target("Automation", width: columns, role: .plain, leadingAligned: true) { dispatch("u", characters: "u") }
+                target("Import", width: columns, role: .plain, leadingAligned: true) { dispatch("i", characters: "i") }
+                Spacer(minLength: 0)
+                TerminalAction(title: "Back", width: 12, height: 2, role: .plain) { model.showsSystemControls = false }
+            } else if model.showsProfileControls {
+                Text(model.title).bold()
+                setting("Dynamic range", value: ["Off", "Low", "High"][min(2, max(0, model.options.drc))], character: "d")
+                setting("Output leveling", value: model.options.outputALC ? "On" : "Off", character: "a")
+                setting("Microphone gain", value: model.options.microphoneAGC ? "On" : "Off", character: "m")
+                if model.profile == "surround" {
+                    setting("Spatial filter", value: model.options.hrtf == "personal" ? "Personal" : "Standard", character: "p")
+                }
+                Spacer(minLength: 0)
+                TerminalEqualColumns(spacing: 2) {
+                    key("Equalizer", "e")
+                    key("Presets", "s")
+                }
+                Spacer(minLength: 1)
+                HStack(spacing: 2) {
+                    TerminalAction(title: "Back", width: 12, height: 2, role: .plain) { model.showsProfileControls = false }
+                    Spacer(minLength: 0)
+                    TerminalAction(title: "Device & apps", width: 20, height: 2) { model.showsSystemControls = true }
+                }
+            } else {
+                HStack(alignment: .top, spacing: 4) {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(0..<6) { index in
+                            TerminalAction(title: profileTitles[index], width: 22, height: rows >= 23 ? 3 : 2,
+                                selected: index == model.selected, enabled: !model.busy, role: .plain,
+                                leadingAligned: true) { model.selectRow(index) }
+                        }
+                    }
+                    TerminalProfileDetails(title: model.title,
+                        description: model.profile == "restore" ? profileDescriptions[model.selected]
+                            : model.details.dropLast().last ?? profileDescriptions[model.selected],
+                        drc: model.options.drc, outputALC: model.options.outputALC,
+                        microphoneAGC: model.options.microphoneAGC, available: model.canEditProfile)
+                        .frame(width: min(columns - 26, 52), alignment: .topLeading)
+                }
+                Spacer(minLength: 1)
+                HStack(spacing: 2) {
+                    target("Device", width: 12, role: .plain) { model.navigate(to: .device) }
+                    target("Automation", width: 16, role: .plain) { model.navigate(to: .automation) }
+                    Spacer(minLength: 0)
+                    target("Controls", width: 16) { model.showsProfileControls = true }
+                    key("Apply", key: .return, width: 16)
+                }
+            }
+        case .equalizer:
+            TerminalEqualizerGraph(values: model.equalizer, selected: model.equalizerIndex,
+                columns: columns, rows: rows - 7, enabled: !model.busy,
+                onSelect: { model.selectRow($0) },
+                onChange: { model.setEqualizerGain(at: $0, to: $1) })
+            HStack(spacing: 1) {
+                key("‹", key: .upArrow, width: 5)
+                Text(String(format: "%@ Hz  %+.1f dB", equalizerFrequencies[model.equalizerIndex], model.equalizer[model.equalizerIndex]))
+                    .bold().frame(width: 22, height: 3)
+                key("›", key: .downArrow, width: 5)
+                Spacer(minLength: 0)
+                target("− 1 dB", width: 10) { model.adjustEqualizer(model.equalizerIndex, by: -1) }
+                target("+ 1 dB", width: 10) { model.adjustEqualizer(model.equalizerIndex, by: 1) }
+            }
+            Spacer(minLength: 1)
+            HStack(spacing: 2) {
+                key("Cancel", key: .escape, width: 12)
+                Spacer(minLength: 0)
+                key("Reset all", "0", width: 14)
+                key("Save & Apply", key: .return, width: 20)
+            }
+        case .presets:
+            let count = max(1, (rows - 8) / 3)
+            let first = model.presetIndex / count * count
+            ForEach(Array(SonyPresets.names.enumerated().dropFirst(first).prefix(count)), id: \.offset) { index, name in
+                target(SonyPresets.labels[name] ?? name, width: columns, selected: index == model.presetIndex, role: .plain, leadingAligned: true) {
+                    model.selectRow(index)
+                }
+            }
+            Spacer(minLength: 0)
+            text("Sony presets replace tone EQ.")
+            HStack(spacing: 2) {
+                key("Previous", key: .upArrow, width: 14)
+                key("Next", key: .downArrow, width: 14)
+                Spacer(minLength: 0)
+            }
+            .padding(.bottom, 1)
+            HStack(spacing: 2) {
+                key("Cancel", key: .escape, width: 12)
+                Spacer(minLength: 0)
+                key("Apply preset", key: .return, width: 20)
+            }
+        case .device:
+            TerminalDeviceOverview(status: model.deviceSummary.status)
+            TerminalDeviceTabs(selected: model.deviceSection, columns: columns, enabled: !model.busy,
+                onSelect: { model.selectDeviceSection($0) })
+            VStack(alignment: .leading, spacing: 0) {
+                if model.deviceSection == .info {
+                    deviceInformation
+                } else {
+                    let indices = model.deviceSectionIndices
+                    let rowHeight = 3
+                    let fullCount = max(1, (rows - 8) / rowHeight)
+                    let count = indices.count > fullCount ? max(1, (rows - 10) / rowHeight) : fullCount
+                    let selected = indices.firstIndex(of: model.deviceIndex) ?? 0
+                    let first = selected / count * count
+                    if indices.isEmpty {
+                        Text(model.deviceSummary.status.connection == .reading ? "Reading device status…" : "No headset settings available.")
+                            .bold().padding(.bottom, 1)
+                        Text("Connect the headset, then refresh.").foregroundStyle(TerminalTheme.muted)
+                    }
+                    ForEach(Array(indices.dropFirst(first).prefix(count)), id: \.self) { index in
+                        deviceSetting(model.deviceRows[index], index: index, height: rowHeight)
+                    }
+                    Spacer(minLength: 0)
+                    if indices.count > count {
+                        HStack(spacing: 2) {
+                            TerminalAction(title: "Previous", width: 14, height: 2, enabled: first > 0 && !model.busy, role: .plain) {
+                                model.selectRow(indices[max(0, first - count)])
+                            }
+                            Spacer(minLength: 0)
+                            TerminalAction(title: "More settings", width: 18, height: 2,
+                                enabled: first + count < indices.count && !model.busy, role: .plain) {
+                                model.selectRow(indices[min(indices.count - 1, first + count)])
+                            }
+                        }
+                    }
+                }
+            }
+            .frame(width: columns, alignment: .topLeading)
+            .highPriorityGesture(
+                DragGesture(minimumDistance: 4).onEnded { value in
+                    if let next = model.deviceSection.swiped(columns: value.translation.columns, rows: value.translation.rows) {
+                        model.selectDeviceSection(next)
+                    }
+                }, isEnabled: !model.busy
+            )
+            HStack(spacing: 2) {
+                key("Back", key: .escape, width: 10)
+                TerminalAction(title: "Discard", width: 12, enabled: model.pendingDeviceCount > 0 && !model.busy, role: .plain) {
+                    model.resetDeviceChanges()
+                }
+                key("Refresh", "r", width: 12)
+                if model.deviceSection == .microphone || model.deviceSummary.monitoring {
+                    key(model.deviceSummary.monitoring ? "Stop mic" : "Test mic", "t", width: 14)
+                } else {
+                    Spacer(minLength: 0)
+                }
+                key("Apply", key: .return, width: 14)
+            }
+        case .automation:
+            let count = max(1, (rows - 7) / 3)
+            let first = model.automationIndex / count * count
+            if model.automationRules.isEmpty {
+                Text("No automation rules").bold().padding(.bottom, 1)
+                Text("Choose a sound profile for each application.").foregroundStyle(TerminalTheme.muted)
+                    .padding(.bottom, 1)
+                target("Add rule", width: 16, role: .primary) { dispatch("a", characters: "a") }
+            }
+            ForEach(Array(model.automationRules.enumerated().dropFirst(first).prefix(count)), id: \.element.app) { index, rule in
+                target("\(rule.priority)  \(rule.app) → \(rule.profile)", width: columns, selected: index == model.automationIndex, role: .plain, leadingAligned: true) {
+                    model.selectRow(index)
+                }
+            }
+            Spacer(minLength: 0)
+            if !model.automationRules.isEmpty {
+                HStack(spacing: 2) {
+                    key("Previous", key: .upArrow, width: 14)
+                    key("Next", key: .downArrow, width: 14)
+                    Spacer(minLength: 0)
+                    key(model.automationActive ? "Stop" : "Start", " ", width: 14)
+                }
+                .padding(.bottom, 1)
+            }
+            HStack(spacing: 2) {
+                key("Back", key: .escape, width: 12)
+                if !model.automationRules.isEmpty { key("Delete", "d", width: 12) }
+                Spacer(minLength: 0)
+                if model.automationRules.isEmpty {
+                    key(model.automationActive ? "Stop" : "Start", " ", width: 14)
+                } else {
+                    target("Add rule", width: 16, role: .primary) { dispatch("a", characters: "a") }
+                }
+            }
+
+        case .prompt:
+            PromptView(model: model, touchOptimized: true)
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func setting(_ title: String, value: String, character: Character) -> some View {
+        HStack(spacing: 2) {
+            Text(title).foregroundStyle(TerminalTheme.muted)
+            Spacer(minLength: 0)
+            TerminalAction(title: model.canEditProfile ? value : "—", width: 16, height: 2,
+                enabled: model.canEditProfile && !model.busy, role: .value) {
+                dispatch(KeyEquivalent(character), characters: String(character))
+            }
+        }
+    }
+
+    private var deviceInformation: some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text("Headset information").bold()
+            Text("Connection    " + model.deviceSummary.status.connectionLabel)
+            Text("Headset       " + terminalText(model.deviceSummary.status.headsetFirmware ?? "Not reported"))
+            Text("USB adapter   " + terminalText(model.deviceSummary.status.dongleFirmware ?? "Not reported"))
+            Text("Device settings apply to every sound profile.").foregroundStyle(TerminalTheme.muted)
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func deviceSetting(_ item: DeviceRow, index: Int, height: Int) -> some View {
+        let pending = model.pendingDeviceValue(at: index)
+        let value = pending ?? item.value
+        let selected = index == model.deviceIndex
+        let display = deviceValue(item, value: value) + (pending == nil ? "" : " *")
+        return HStack(spacing: 1) {
+            Text(deviceLabel(item)).lineLimit(1).bold(selected)
+            Spacer(minLength: 0)
+            if item.values.count == 2 {
+                TerminalAction(title: display, width: 30, height: height, enabled: !model.busy, role: .value,
+                    baseBackground: selected ? TerminalTheme.surface : TerminalTheme.background) {
+                    model.adjustDeviceValue(at: index, direction: value == item.values.last ? -1 : 1)
+                }
+            } else {
+                TerminalAction(title: "−", width: 5, height: height, enabled: !model.busy && value > (item.values.first ?? value), role: .plain,
+                    baseBackground: selected ? TerminalTheme.surface : TerminalTheme.background) {
+                    model.adjustDeviceValue(at: index, direction: -1)
+                }
+                Text(display).lineLimit(1).frame(width: 18, height: height)
+                    .foregroundStyle(pending == nil ? TerminalTheme.text : TerminalTheme.accent)
+                TerminalAction(title: "+", width: 5, height: height, enabled: !model.busy && value < (item.values.last ?? value), role: .plain,
+                    baseBackground: selected ? TerminalTheme.surface : TerminalTheme.background) {
+                    model.adjustDeviceValue(at: index, direction: 1)
+                }
+            }
+        }
+        .padding(.horizontal, 1)
+        .frame(height: height)
+        .foregroundStyle(TerminalTheme.text)
+        .background(selected ? TerminalTheme.surface : TerminalTheme.background)
+        .onTapGesture { model.selectRow(index) }
+    }
+
+    private func deviceLabel(_ row: DeviceRow) -> String {
+        switch row.key {
+        case "game_chat": "Game/chat balance"
+        case "game_volume": "Game volume"
+        case "chat_volume": "Chat volume"
+        case "mic_volume": "Microphone volume"
+        case "auto_power": "Auto power off"
+        case "toggle_off": "Button cycle: off"
+        case "toggle_nc": "Button cycle: noise cancel"
+        case "toggle_ambient": "Button cycle: ambient"
+        case "nc_startup": "Noise mode at startup"
+        case "bt_startup": "Bluetooth at startup"
+        case "language": "Guidance language"
+        case "guidance": "Voice guidance"
+        default: row.label
+        }
+    }
+
+    private func deviceValue(_ row: DeviceRow, value: Int) -> String {
+        if row.key == "auto_power" { return value == 0 ? "Off" : "\(value) min" }
+        if row.key == "game_chat", value == 50 { return "50 · center" }
+        if row.key == "ambient_level" { return "\(value) / 20" }
+        return row.display(value)
+    }
+
+    private func text(_ value: String) -> some View {
+        Text(terminalText(value)).lineLimit(1)
+    }
+
+    private func key(_ title: String, _ character: Character, width: Int? = nil) -> some View {
+        key(title, key: KeyEquivalent(character), characters: String(character), width: width)
+    }
+
+    private func key(_ title: String, key: KeyEquivalent, characters: String = "", width: Int? = nil) -> some View {
+        let profileOption = model.screen == .profiles && ["d", "a", "m", "p", "e", "s"].contains(characters)
+        let available = !profileOption || (model.canEditProfile && (characters != "p" || model.profile == "surround"))
+        let deviceAction = model.screen == .device && [KeyEquivalent.upArrow, .downArrow, .leftArrow, .rightArrow, .return].contains(key)
+        let hasDeviceValue = !deviceAction || (key == .return ? model.canApplyDeviceChanges : !model.deviceRows.isEmpty)
+        return target(title, width: width,
+            enabled: available && hasDeviceValue && (!model.busy || (characters == "t" && model.deviceSummary.monitoring)),
+            role: key == .return ? .primary : (key == .escape ? .plain : (model.screen == .automation && characters == "d" ? .destructive : .normal))) {
+            dispatch(key, characters: characters)
+        }
+    }
+
+    private func dispatch(_ key: KeyEquivalent, characters: String = "") {
+        _ = model.handle(KeyPress(key: key, characters: characters), terminate: { terminate() })
+    }
+
+    private func target(_ title: String, width: Int? = nil, selected: Bool = false, enabled: Bool? = nil,
+                        role: TerminalActionRole = .normal, leadingAligned: Bool = false,
+                        action: @escaping () -> Void) -> some View {
+        TerminalAction(title: title, width: width, selected: selected, enabled: enabled ?? !model.busy,
+            role: role, leadingAligned: leadingAligned, action: action)
+    }
+}
+
+@MainActor
+private struct ProfileSummary: View {
+    let model: TerminalModel
+
+    var body: some View {
+        TerminalProfileSummary(
+            description: model.profile == "restore" ? profileDescriptions[model.selected]
+                : model.details.dropLast().last ?? profileDescriptions[model.selected],
+            drc: model.options.drc, outputALC: model.options.outputALC,
+            microphoneAGC: model.options.microphoneAGC, available: model.canEditProfile
+        )
+    }
+}
+
+@MainActor
+private struct TerminalSidebar: View {
+    let model: TerminalModel
+    let rows: Int
+
+    private var navigationEnabled: Bool {
+        !model.busy && [.profiles, .device, .automation].contains(model.screen)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Browse").foregroundStyle(TerminalTheme.muted)
+                .frame(width: 26, height: 1, alignment: .leading)
+                .padding(.bottom, 1)
+            navigation("Profiles", .profiles)
+            navigation("Device", .device)
+            navigation("Automation", .automation)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 1)
+        .frame(width: 28, height: rows, alignment: .topLeading)
+        .background(TerminalTheme.surface)
+    }
+
+    private func navigation(_ title: String, _ screen: TerminalScreen) -> some View {
+        TerminalAction(title: title, width: 26, selected: model.screen == screen, enabled: navigationEnabled,
+            role: .plain, leadingAligned: true, baseBackground: TerminalTheme.surface) {
+            model.navigate(to: screen)
+        }
+        .padding(.bottom, 1)
     }
 }
 
 @MainActor
 private struct PromptView: View {
     let model: TerminalModel
+    var touchOptimized = false
     @FocusState private var focused: Bool
 
     var body: some View {
         VStack(alignment: .leading) {
             Text(terminalText(model.promptTitle)).bold()
-            TextField(">", text: Binding(get: { model.promptText }, set: { model.promptText = terminalText($0) }))
+            TextField("Value", text: Binding(get: { model.promptText }, set: { model.promptText = terminalText($0) }))
+                .frame(height: touchOptimized ? 3 : 1)
+                .foregroundStyle(TerminalTheme.text)
+                .background(TerminalTheme.surface)
                 .focused($focused)
                 .onSubmit { model.submitPrompt() }
-            Text(terminalText(model.message)).lineLimit(1)
-            Text("Enter: Next/Save  Esc: Cancel")
+            HStack(spacing: 2) {
+                TerminalAction(title: "Cancel", width: 12,
+                    height: touchOptimized ? 3 : 1, enabled: !model.busy, role: .plain) { model.cancelPrompt() }
+                Spacer(minLength: 0)
+                TerminalAction(title: model.promptActionTitle, width: 18,
+                    height: touchOptimized ? 3 : 1, enabled: !model.busy, role: .primary) { model.submitPrompt() }
+            }
         }
         .onAppear { focused = true }
         .onChange(of: model.promptTitle) { _, _ in focused = true }

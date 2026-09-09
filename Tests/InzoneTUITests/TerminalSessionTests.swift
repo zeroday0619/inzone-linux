@@ -8,9 +8,9 @@ struct TerminalSessionTests {
         "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
-    private func screen(_ data: Data) -> String {
+    private func screen(_ data: Data, columns: Int = 80, rows: Int = 24) -> String {
         let scalars = Array(String(decoding: data, as: UTF8.self).unicodeScalars)
-        var cells = Array(repeating: Array(repeating: " ", count: 80), count: 24)
+        var cells = Array(repeating: Array(repeating: " ", count: columns), count: rows)
         var row = 0, column = 0, index = 0
         var widths: [Unicode.Scalar: Int] = [:]
         // SwiftTUI updates changed cells in place, so stripping ANSI would lose unchanged text.
@@ -31,14 +31,14 @@ struct TerminalSessionTests {
                     let values = parameters.split(separator: ";", omittingEmptySubsequences: false).map { Int($0) ?? 0 }
                     switch command {
                     case "H", "f":
-                        row = min(23, max(0, (values.first ?? 1) - 1))
-                        column = min(79, max(0, (values.count > 1 ? values[1] : 1) - 1))
+                        row = min(rows - 1, max(0, (values.first ?? 1) - 1))
+                        column = min(columns - 1, max(0, (values.count > 1 ? values[1] : 1) - 1))
                     case "J" where values.first == 2:
-                        cells = Array(repeating: Array(repeating: " ", count: 80), count: 24)
+                        cells = Array(repeating: Array(repeating: " ", count: columns), count: rows)
                     case "K":
-                        for position in column..<80 { cells[row][position] = " " }
+                        for position in column..<columns { cells[row][position] = " " }
                     case "h" where parameters == "?1049":
-                        cells = Array(repeating: Array(repeating: " ", count: 80), count: 24)
+                        cells = Array(repeating: Array(repeating: " ", count: columns), count: rows)
                         row = 0; column = 0
                     default: break
                     }
@@ -54,7 +54,7 @@ struct TerminalSessionTests {
                 continue
             }
             if scalar == "\r" { column = 0; continue }
-            if scalar == "\n" { row = min(23, row + 1); continue }
+            if scalar == "\n" { row = min(rows - 1, row + 1); continue }
             if scalar.value < 32 || scalar.value == 127 { continue }
             let width = widths[scalar] ?? RunGroup(String(scalar)).measure().maximumContentColumns
             widths[scalar] = width
@@ -62,18 +62,19 @@ struct TerminalSessionTests {
                 if column > 0 { cells[row][column - 1] += String(scalar) }
                 continue
             }
-            if column >= 80 { column = 0; row = min(23, row + 1) }
+            if column >= columns { column = 0; row = min(rows - 1, row + 1) }
             cells[row][column] = String(scalar)
             if width > 1 {
-                for position in (column + 1)..<min(80, column + width) { cells[row][position] = "" }
+                for position in (column + 1)..<min(columns, column + width) { cells[row][position] = "" }
             }
             column += width
         }
         return cells.map { $0.joined() }.joined(separator: "\n")
     }
 
-    @Test(.timeLimit(.minutes(1)))
-    func interactiveMenusAcceptRealTerminalInputWithoutChangingSettings() throws {
+    @Test(.timeLimit(.minutes(1)), arguments: [80, 120])
+    func interactiveMenusAcceptRealTerminalInputWithoutChangingSettings(columns: Int) throws {
+        func screen(_ data: Data) -> String { self.screen(data, columns: columns) }
         let manager = FileManager.default
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent()
@@ -116,7 +117,7 @@ struct TerminalSessionTests {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/script")
         process.arguments = ["--quiet", "--return", "--command",
-            "/usr/bin/stty rows 24 cols 80; exec \(quoted(executable.path)) --tui", "/dev/null"]
+            "/usr/bin/stty rows 24 cols \(columns); exec \(quoted(executable.path)) --tui", "/dev/null"]
         var environment = ProcessInfo.processInfo.environment
         environment["HOME"] = home.path
         environment["PATH"] = binaries.path + ":" + (environment["PATH"] ?? "/usr/bin:/bin")
@@ -159,8 +160,75 @@ struct TerminalSessionTests {
             Thread.sleep(forTimeInterval: 0.25)
         }
 
+        func location(of label: String, rowOffset: Int = 0) throws -> String {
+            let lines = screen(try Data(contentsOf: transcript)).components(separatedBy: "\n")
+            // Action labels occupy padded cells; boundaries exclude headings and longer labels.
+            let pattern = "(?:(?<= {2})|(?<=^ ))" + NSRegularExpression.escapedPattern(for: label) + "(?= {2}|$)"
+            let row = try #require(lines.firstIndex(where: { $0.range(of: pattern, options: .regularExpression) != nil }), "Missing click target: \(label)")
+            let range = try #require(lines[row].range(of: pattern, options: .regularExpression))
+            let column = RunGroup(String(lines[row][..<range.lowerBound])).measure().maximumContentColumns
+            return "\(column + 1);\(row + 1 + rowOffset)"
+        }
+
+        func click(_ label: String, rowOffset: Int = 0, expecting text: String) throws {
+            let location = try location(of: label, rowOffset: rowOffset)
+            try send("\u{1b}[<0;\(location)M\u{1b}[<0;\(location)m", expecting: text)
+        }
+
         try waitFor("INZONE H9 II", timeout: 10)
         Thread.sleep(forTimeInterval: 0.35)
+        let initialScreen = screen(try Data(contentsOf: transcript))
+        #expect(initialScreen.contains("Balanced"))
+        #expect(!initialScreen.contains("4  Balanced"))
+        #expect(!initialScreen.contains("Active"))
+        #expect(!initialScreen.contains("ACTIVE PROFILE"))
+        if columns >= 110 {
+            try click("Automation", expecting: "Auto Profiles / Stopped")
+            try click("Profiles", expecting: "INZONE H9 II / Profiles")
+        }
+        try click("Restore Defaults", expecting: "Restores saved tone")
+        try click("Controls", expecting: "Changes apply immediately to Restore Defaults.")
+        try click("Equalizer", expecting: "Changes apply immediately to Restore Defaults.")
+        #expect(!screen(try Data(contentsOf: transcript)).contains("10-band EQ"))
+        try click("Back", expecting: "INZONE H9 II / Profiles")
+        try click("Music", expecting: "Original sound. Stability first.")
+        let voiceLocation = try location(of: "Voice")
+        try send("\u{1b}[<0;\(voiceLocation)M", expecting: "Original sound. Stability first.")
+        #expect(!screen(try Data(contentsOf: transcript)).contains("Clearer voices."))
+        try send("\u{1b}[<32;1;1M\u{1b}[<0;1;1m", expecting: "Original sound. Stability first.")
+        #expect(!screen(try Data(contentsOf: transcript)).contains("Clearer voices."))
+        try click("Voice", expecting: "Clearer voices. Less microphone rumble.")
+        try click("Music", expecting: "Original sound. Stability first.")
+        try send("\u{1b}[<65;3;5M", expecting: "Clearer voices. Less microphone rumble.")
+        try send("\u{1b}[<64;3;5M", expecting: "Original sound. Stability first.")
+        try click("Controls", rowOffset: 1, expecting: "Changes apply immediately to Music.")
+        try click("Equalizer", rowOffset: -1, expecting: "10-band EQ / Music")
+        try click("16k", expecting: "16k Hz")
+        try click("31.5", expecting: "31.5 Hz")
+        try click("+ 1 dB", rowOffset: 1, expecting: "+1.0 dB")
+        try click("›", rowOffset: -1, expecting: "63 Hz")
+        try click("‹", rowOffset: 1, expecting: "31.5 Hz")
+        try click("Reset all", expecting: "+0.0 dB")
+        try click("Cancel", rowOffset: -1, expecting: "INZONE H9 II / Profiles")
+        try click("Controls", expecting: "Changes apply immediately to Music.")
+        try click("Device & apps", expecting: "Import")
+        try click("Automation", expecting: "Auto Profiles / Stopped")
+        try click("Add rule", rowOffset: 1, expecting: "Executable name/path")
+        try click("Cancel", rowOffset: -1, expecting: "Auto Profiles / Stopped")
+        try click("Back", expecting: "INZONE H9 II / Profiles")
+        try click("Compact", expecting: "Touch layout")
+        try click("Voice", expecting: "Clearer voices. Less microphone rumble.")
+        try click("Music", expecting: "Original sound. Stability first.")
+        try send("\u{1b}[<65;3;5M", expecting: "Clearer voices. Less microphone rumble.")
+        try send("\u{1b}[<64;3;5M", expecting: "Original sound. Stability first.")
+        try click("E: EQ", expecting: "10-band EQ / Music")
+        try click("+", expecting: "+1.0 dB")
+        try click("Reset", expecting: "+0.0 dB")
+        try click("Cancel", expecting: "INZONE H9 II")
+        try click("U: Automation", expecting: "Auto Profiles")
+        try click("A: Add/Edit", expecting: "Executable name/path")
+        try click("Cancel", expecting: "Auto Profiles")
+        try click("Back", expecting: "INZONE H9 II")
         try send("S", expecting: "Sony EQ Presets")
         try send("\u{1b}", expecting: "INZONE H9 II")
         try send("E", expecting: "10-band EQ")
@@ -174,6 +242,11 @@ struct TerminalSessionTests {
         while process.isRunning && Date() < exitDeadline { Thread.sleep(forTimeInterval: 0.02) }
         try #require(!process.isRunning, "Uppercase Q must terminate the terminal application.")
         #expect(process.terminationStatus == 0)
+        let raw = try String(contentsOf: transcript, encoding: .utf8)
+        #expect(raw.contains("\u{1b}[?1003h"))
+        #expect(raw.contains("\u{1b}[?1006h"))
+        #expect(raw.contains("\u{1b}[?1003l"))
+        #expect(raw.contains("\u{1b}[?1006l"))
         #expect(try Data(contentsOf: active) == original)
         #expect(!manager.fileExists(atPath: config.appendingPathComponent("profile-settings.json").path))
         #expect(!manager.fileExists(atPath: config.appendingPathComponent("auto-profiles.json").path))

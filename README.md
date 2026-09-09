@@ -26,7 +26,7 @@ Enjoy the complete feature set of the headset on Linux without requiring Windows
 - **Automatic Game & App Profile Switching**
   - Automatically switches to surround/FPS profiles when games launch (supporting native Linux, Steam, Proton, and Wine binaries) and switches to voice mode when Discord launches, restoring the previous profile when exited.
 - **Intuitive TUI & Powerful CLI**
-  - Interactive terminal interface (`inzone-profile`) driven by SwiftTUI for keyboard-driven adjustments, plus a comprehensive CLI for scripting, hotkeys, and window manager integration.
+  - Interactive terminal interface (`inzone-profile`) driven by SwiftTUI with mouse and keyboard controls, plus a comprehensive CLI for scripting, hotkeys, and window manager integration.
 - **Windows Profile & Personalized HRTF Interoperability**
   - Import and export `SoundProfile.json` from/to Windows INZONE Hub.
   - Import mobile ear-measurement personalization files (`personalized_hrtf.hki`, `YY2987.ba`) to apply personalized spatial audio on Linux.
@@ -72,6 +72,11 @@ make
 
 > **Privilege Note**: Do not run `sudo make`. User-space files (`~/.local/bin`, `~/.config`) are installed under regular user permissions. `sudo` is requested only at the final step for installing udev rules (`/etc/udev/rules.d`) and system LADSPA plugins (`/usr/lib/ladspa`).
 
+Run installation in a foreground terminal. During administrator authentication,
+the installer hands terminal control to `sudo`, which reads the password directly.
+Password characters are not echoed. Terminal ownership and input settings are
+restored when the command finishes, fails, is interrupted, or times out.
+
 ### 3. Reconnect Device & Activate
 Unplug and replug the USB dongle to apply the new udev permissions, then activate the surround sound profile:
 
@@ -85,6 +90,8 @@ The Sony spatial audio stack is now active.
 
 ## Interactive TUI Guide
 
+See [DESIGN.md](DESIGN.md) for the visual system, interaction contracts, and design-review requirements.
+
 Running `inzone-profile` without arguments opens the interactive terminal controller:
 
 ```sh
@@ -92,23 +99,112 @@ inzone-profile
 ```
 *(Recommended terminal size: 72 columns × 24 rows or larger)*
 
-```
-┌──────────────────────── INZONE H9 II Controller ────────────────────────┐
-│  1. fps        FPS · Reduced Bass / Footstep Frequency Boost            │
-│  2. music      Music · Original Sound / Stability Priority              │
-│  3. voice      Chat · Voice Clarity / Low-End Rolloff                   │
-│  4. balanced   Default · Flat EQ / Balanced Tuning                      │
-│* 5. surround   Surround · Sony Default HRTF / Spatial Audio             │
-│  6. restore    Restore Previous Pitch and Latency Settings              │
-└─────────────────────────────────────────────────────────────────────────┘
+The profile list displays names without ordinal numbers or active-state labels.
+Bold text and a neutral highlight identify the selected profile.
+The details area describes the selected profile. Selecting a row does not apply it;
+use **Apply** or **Enter** to activate the selection.
+The selected profile's description and sound-processing values appear in a separate
+detail column. Unavailable settings show `—`.
+
+### Touch Layout
+
+The default layout places a profile list beside its details. Primary action buttons
+use three-row targets; profile rows use two rows in short windows and three rows
+when at least 30 terminal rows are available. Tap **Controls** for DSP values, EQ,
+and presets. The bottom action area opens **Device** and **Automation** directly.
+**Device & apps** also provides these destinations and personalization imports.
+Tap **Compact** for the dense desktop layout, or **Touch layout** to return.
+The layout choice lasts for the current session.
+
+Both layouts share a fixed three-row header and two-row footer. The header shows
+the current screen and the layout toggle. The footer displays the operation status
+or device error on its first row and screen-specific shortcuts on its second row.
+Content and the workspace sidebar occupy the area between them, so navigation,
+editing, and resizing do not move the header or footer into the content area.
+A blank row separates the content from both the header and footer.
+
+The interface uses neutral graphite surfaces, blue primary actions, and restrained
+secondary text. Hover and press feedback cover the full target. Releasing outside
+a button cancels its action. Selection uses weight and neutral shading; destructive
+actions use red labels. Button labels have no decorative brackets or selection
+prefixes. DSP controls show their current
+values and are disabled when the selected profile does not support them.
+
+At 110 columns or wider, the touch layout adds a workspace sidebar with direct
+navigation to Profiles, Device, and Automation. Profile details remain in the main
+content area instead of repeating in the sidebar.
+Navigation is disabled while an editor is open or an operation is running;
+save or cancel the editor before changing sections. Smaller windows retain the
+single-panel layout, including the 72×24 minimum.
+
+The touch EQ screen shows all ten band gains as bars around a 0 dB baseline.
+Tap a bar or frequency to select a band, then drag vertically to adjust its draft
+gain within −12 to +12 dB. Dragging stays on the original band and clamps at the
+plot limits. Frequency-label taps and drags select without changing gain.
+Use **− 1 dB** / **+ 1 dB** for precise changes and **‹** / **›** to switch bands.
+The graph's drag resolution depends on terminal height. It displays band settings,
+not the calculated filter frequency response. **Reset all** resets the draft for
+all ten bands. Only **Save & Apply** saves it; **Cancel** discards it.
+Preset and automation lists follow the selection across pages. Device settings use
+category tabs with **Previous** and **More settings** for longer sections.
+
+Touch operation requires a terminal or remote terminal client that translates
+touch taps into primary-pointer press and release reports. Target sizes use terminal
+cells, not physical pixels; adjust the terminal font size for the display.
+Native multitouch gestures are not used. Text entry requires a physical or system
+onscreen keyboard; the TUI does not provide a virtual keyboard.
+
+The layout adapts the [HIG layout](https://sosumi.ai/design/human-interface-guidelines/layout),
+[color](https://sosumi.ai/design/human-interface-guidelines/color), and
+[button](https://sosumi.ai/design/human-interface-guidelines/buttons) principles to
+terminal cells. It does not implement native Apple materials or physical point sizing.
+It also applies [One UI's viewing and interaction areas](https://developer.samsung.com/one-ui/index.html),
+[grouped settings lists](https://developer.samsung.com/one-ui/comp/list.html), and
+[concise, task-focused wording](https://developer.samsung.com/one-ui/writing/simple-and-human.html).
+Status information stays above the settings, and Apply/Discard stay at the bottom.
+
+### Visual Review
+
+Export hardware-independent screen previews and render their actual ANSI colors:
+
+```sh
+INZONE_TUI_PREVIEW_DIRECTORY=/tmp/inzone-preview swift test --filter VisualPreviewTests
+python3 tools/render_tui_snapshot.py /tmp/inzone-preview /tmp/inzone-preview-png
 ```
 
+The optional PNG renderer requires Pillow and DejaVu Sans Mono fonts. Neither is a
+runtime dependency. Preview data is synthetic and does not read device settings.
+
+### Mouse Controls
+
+Mouse operation requires a terminal that forwards SGR mouse reports. SwiftTUI 0.12.0
+enables reporting for the interactive session and restores it on normal exit.
+The interface uses the framework's [pointer and gesture APIs](https://minacle.github.io/swift-tui/latest/documentation/swifttuiessentials/inputrecognition/).
+Keyboard shortcuts remain available when mouse reports are unavailable.
+
+| Target | Mouse action | Result |
+|:---|:---|:---|
+| Profile, preset, device, or automation row | Click | Select the row without applying or deleting it |
+| Lists and EQ | Wheel up/down | Move the selection as with the arrow keys; long lists follow the selection |
+| Button | Click | Run the displayed action, including navigation, Apply, Back, and Cancel |
+| EQ band | Click **−** or **+** | Select the band and adjust its draft gain by 1 dB, within −12 to +12 dB |
+| EQ graph | Tap to select; drag vertically to adjust | Edit the original band's draft gain without applying it |
+| EQ footer | Click **Reset**, **Save & Apply**, or **Cancel** | Reset the draft to zero, save it, or discard it |
+| Device setting | Click **−** / **+**, or tap an On/Off value | Stage a value marked `*`; changing rows or tabs preserves it |
+| Device action area | Click **Apply** or **Discard** | Apply all available drafts or clear them without writing to the device |
+| Input form | Click the field, **Continue** / **Save**, or **Cancel** | Edit text, advance or complete the form, or return to the previous screen |
+
+The compact EQ meter shows the draft gain and its zero reference. Profile DSP controls
+(DRC, Output ALC, Mic AGC, and HRTF) apply immediately, as their keyboard shortcuts do.
+Selection and setting changes are blocked while an operation is in progress.
+
 ### Keyboard Shortcuts
+
 | Shortcut | Action | Description |
 |:---:|:---|:---|
 | **↑ / ↓** or **1–6** | Move cursor | Browse through available profiles |
 | **Enter** | Apply profile | Immediately commit selected profile and DSP graph to WirePlumber |
-| **H** | Headset control modal | Open hardware dialog for ANC, Sidetone, Game/Chat balance, etc. |
+| **H** | Device controls | Open noise, sound, microphone, and system settings |
 | **E** | Edit 10-band EQ | Adjust bands from 31.5 Hz to 16 kHz (-12 to +12 dB) |
 | **S** | Select Sony preset | Choose from Flat, FPS 1/2/3, RPG, Bass Boost, or Music/Video |
 | **D** | Dynamic Range Control (DRC) | Cycle through Off → Low → High |
@@ -119,9 +215,31 @@ inzone-profile
 | **U** | Process auto-switching | Edit executable binding rules and toggle background daemon |
 | **Q / Esc** | Quit | Exit TUI (current audio settings remain active) |
 
-### Hardware Control Modal (H Key)
+### Device Controls (H Key)
+
+The touch layout keeps connection and battery status in a compact top area.
+Battery status includes the reported percentage, a ten-segment gauge, and charging
+state. Low charge (20% or below) and charge errors use the warning color.
+Missing or invalid battery readings remain unavailable rather than appearing as 0%.
+Disconnected snapshots do not retain stale battery or firmware values.
+
+Settings are grouped into Noise, Sound, Mic, System, and Info tabs. Each setting
+has its own value control: tap binary values to toggle them or use the adjacent
+minus/plus buttons. Firmware versions appear in Info. Mic contains the microphone
+monitor control. Setting labels align left and values align right.
+
+Tap a tab or swipe left/right across the tabs or settings area to change sections.
+Each swipe moves one section and stops at either end. Swiping across a control does
+not change its value. Tabs and setting rows are three rows high with centered text.
+
+Draft changes survive row selection, tab changes, refresh, and workspace navigation.
+Apply writes and verifies each setting sequentially. Confirmed readbacks clear the
+corresponding drafts; unconfirmed drafts remain after a failure. If a draft's setting
+is unavailable, refresh the connection or discard the drafts before applying.
+Drafts are held only for the current TUI session.
+
 - **← / → Arrow Keys**: Adjust selected hardware parameter (e.g., cycle ANC modes, change Sidetone level)
-- **Enter**: Send updated hardware configuration to the headset immediately
+- **Enter**: Apply the staged device and system-audio settings
 - **R**: Refresh live headset state (battery level, firmware version, etc.)
 - **T**: Microphone loopback audio test (up to 30 seconds, pure in-memory playback without file writes)
 

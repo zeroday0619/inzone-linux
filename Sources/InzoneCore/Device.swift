@@ -205,7 +205,7 @@ public final class InzoneDevice {
                 let response = try HIDPacketCodec.parsePacket(raw)
                 guard response.event == event.identifier, response.sequence == expectedSequence,
                       response.source == (event.identifier == 1 ? 2 : 4),
-                      response.kind == 0x10 || (kind == 2 && response.kind == 0x20) else { continue }
+                      response.kind == (kind == 2 ? 0x20 : 0x10) else { continue }
                 parts.append(response.payload)
                 guard parts.count <= 1024 else { throw InzoneError.message("Command response limit exceeded.") }
                 if response.payload.count < 50 {
@@ -228,6 +228,13 @@ public final class InzoneDevice {
     }
 
     public func setField(_ name: String, value: Int) throws {
+        try setField(name, value: value, verificationTimeout: 1.5)
+    }
+
+    func setField(_ name: String, value: Int, verificationTimeout: TimeInterval) throws {
+        guard verificationTimeout.isFinite, verificationTimeout > 0 else {
+            throw InzoneError.message("Device verification timeout must be positive and finite.")
+        }
         guard let field = Self.fields.first(where: { $0.name == name }), field.values.contains(value) else {
             throw InzoneError.message("Unknown device field or out-of-range value: \(name)")
         }
@@ -239,8 +246,26 @@ public final class InzoneDevice {
         }
         if field.eventName == "auto_power", value != 0 { payload[1] = UInt8(value) }
         _ = try transact(field.eventName, kind: 2, payload: Data(payload))
-        let observed = Array(try transact(field.eventName))
-        guard observed[field.index] == value else { throw InzoneError.message("Device did not apply the requested value.") }
+        let deadline = ProcessInfo.processInfo.systemUptime + verificationTimeout
+        var lastObserved: Int?
+        repeat {
+            let remaining = deadline - ProcessInfo.processInfo.systemUptime
+            guard remaining > 0 else { break }
+            do {
+                let observed = Array(try transact(field.eventName, timeout: remaining))
+                lastObserved = Int(observed[field.index])
+                if lastObserved == value { return }
+            } catch is DeviceTimeout {
+                break
+            }
+            // Verify convergence without repeating a command the headset may have already applied.
+            let delay = min(0.05, max(0, deadline - ProcessInfo.processInfo.systemUptime))
+            if delay > 0 { Thread.sleep(forTimeInterval: delay) }
+        } while ProcessInfo.processInfo.systemUptime < deadline
+        let observed = lastObserved.map(String.init) ?? "no reply"
+        throw InzoneError.message(
+            "Unconfirmed \(field.name): requested \(value), observed \(observed)."
+        )
     }
 
     public static func describe(_ data: [String: [UInt8]]) -> [String: Any] {

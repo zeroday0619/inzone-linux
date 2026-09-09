@@ -203,6 +203,17 @@ sequenceDiagram
 
 ### 7.1. Key Hardware Event IDs
 
+GET transactions require a `RET` (`0x10`) response; SET transactions require a
+matching `NTFY` (`0x20`) response. Event ID, source address, and transaction ID
+must also match. An unsolicited `NTFY_ACTIVE` (`0xA0`) does not complete either
+transaction.
+
+After SET acknowledgement, the client polls GET readback for up to 1.5 seconds.
+A mismatching readback waits up to 50 ms before the next query. The SET command
+is not retransmitted. Verification succeeds only when the requested field matches;
+otherwise the error includes the field, requested value, and last observed value.
+This handles temporary stale readback without hiding persistent device rejection.
+
 | Field | Event ID | Index | Valid Values | Description |
 |---|---|---|---|---|
 | `anc` | 65 | 0 | 0, 1, 2 | 0: Off, 1: Noise Canceling (NC), 2: Ambient Sound |
