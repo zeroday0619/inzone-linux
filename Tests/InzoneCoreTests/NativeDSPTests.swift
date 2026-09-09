@@ -153,6 +153,38 @@ final class NativeDSPTests: XCTestCase {
         }
     }
 
+    func testDebugLogReportsDSPInstanceAndRealtimeCountersAtCleanup() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let log = directory.appendingPathComponent("dsp.log")
+        XCTAssertEqual(setenv("INZONE_DSP_DEBUG_LOG", log.path, 1), 0)
+        defer { unsetenv("INZONE_DSP_DEBUG_LOG") }
+        let library = try NativeDSPTestLibrary()
+        let pointer = try XCTUnwrap(library.descriptor(4))
+        let descriptor = pointer.pointee
+        let handle = try XCTUnwrap(try XCTUnwrap(descriptor.instantiate)(pointer, 48_000))
+        var input: Float = .nan
+        var output: Float = 0
+        var controls: [Float] = [.nan, 0, 0, 0, 0]
+        let connect = try XCTUnwrap(descriptor.connect_port)
+        connect(handle, 0, &input)
+        connect(handle, 1, &output)
+        controls.withUnsafeMutableBufferPointer { values in
+            for index in values.indices { connect(handle, UInt(index + 2), values.baseAddress! + index) }
+        }
+        try XCTUnwrap(descriptor.run)(handle, 1)
+        try XCTUnwrap(descriptor.cleanup)(handle)
+
+        let contents = try String(contentsOf: log, encoding: .utf8)
+        XCTAssertTrue(contents.contains("event=instantiate plugin=4"))
+        XCTAssertTrue(contents.contains("run_calls=1"))
+        XCTAssertTrue(contents.contains("processed_frames=1"))
+        XCTAssertTrue(contents.contains("invalid_controls=1"))
+        XCTAssertTrue(contents.contains("nonfinite_inputs=1"))
+        XCTAssertTrue(contents.contains("event=cleanup"))
+    }
+
     private func render(descriptor: LADSPA_Descriptor, handle: LADSPA_Handle, source: [[Float]],
                         blocks: [Int], inPlace: Bool, shouldActivate: Bool = true) throws -> [[Float]] {
         let frames = try XCTUnwrap(source.first?.count)

@@ -23,13 +23,65 @@ public struct InzonePaths: Sendable {
     public var activeProfile: URL {
         home.appendingPathComponent(".config/wireplumber/wireplumber.conf.d/51-inzone-h9-ii.conf")
     }
+    public var activeDSPProfile: URL {
+        home.appendingPathComponent(".config/pipewire/pipewire.conf.d/51-inzone-h9-ii-dsp.conf")
+    }
     public var shareDirectory: URL { home.appendingPathComponent(".local/share/inzone-linux") }
     public var assetsDirectory: URL { shareDirectory.appendingPathComponent("assets") }
     public var pluginURL: URL { home.appendingPathComponent(".local/lib/ladspa/inzone_dsp.so") }
+    public var debugLog: URL { home.appendingPathComponent(".local/state/inzone-linux/debug.log") }
 
     public init(home: URL = URL(fileURLWithPath: ProcessInfo.processInfo.environment["HOME"]
         ?? FileManager.default.homeDirectoryForCurrentUser.path)) {
         self.home = home.standardizedFileURL
+    }
+}
+
+public protocol DiagnosticLogging: Sendable {
+    func log(_ message: String)
+}
+
+public struct DisabledDiagnosticLogger: DiagnosticLogging {
+    public init() {}
+    public func log(_ message: String) {}
+}
+
+public final class DiagnosticLogger: DiagnosticLogging, @unchecked Sendable {
+    private let lock = NSLock()
+    private let fileHandle: FileHandle
+    private let echoToStandardError: Bool
+
+    public init(file: URL, echoToStandardError: Bool = false) throws {
+        try FileManager.default.createDirectory(
+            at: file.deletingLastPathComponent(), withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let descriptor = Glibc.open(
+            file.path, O_WRONLY | O_APPEND | O_CREAT | O_NOFOLLOW | O_CLOEXEC, mode_t(0o600)
+        )
+        guard descriptor >= 0 else {
+            throw InzoneError.message("Cannot open debug log at \(file.path): \(String(cString: strerror(errno))).")
+        }
+        var status = stat()
+        guard Glibc.fstat(descriptor, &status) == 0, (status.st_mode & S_IFMT) == S_IFREG,
+              status.st_uid == Glibc.geteuid(), Glibc.fchmod(descriptor, mode_t(0o600)) == 0 else {
+            Glibc.close(descriptor)
+            throw InzoneError.message("The debug log must be a regular file owned by the current user.")
+        }
+        fileHandle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+        self.echoToStandardError = echoToStandardError
+    }
+
+    deinit { try? fileHandle.close() }
+
+    public func log(_ message: String) {
+        let safeMessage = TerminalOutput.escaped(message, preservingNewlines: false)
+        let line = "[\(Date().ISO8601Format())] \(safeMessage)\n"
+        let data = Data(line.utf8)
+        lock.lock()
+        defer { lock.unlock() }
+        try? fileHandle.write(contentsOf: data)
+        if echoToStandardError { try? FileHandle.standardError.write(contentsOf: data) }
     }
 }
 
@@ -288,12 +340,18 @@ extension CommandRunning {
 }
 
 public struct SystemCommandRunner: CommandRunning {
-    public init() {}
+    private let logger: any DiagnosticLogging
+
+    public init(logger: any DiagnosticLogging = DisabledDiagnosticLogger()) {
+        self.logger = logger
+    }
 
     public func run(_ arguments: [String], input: Data? = nil, timeout: TimeInterval = 15) throws -> String {
         guard let command = arguments.first, !command.isEmpty, timeout > 0 else {
             throw InzoneError.message("A command and positive timeout are required.")
         }
+        let startedAt = ProcessInfo.processInfo.systemUptime
+        logger.log("command start: \(arguments.joined(separator: " ")); input_bytes=\(input?.count ?? 0); timeout=\(timeout)")
         let manager = FileManager.default
         let directory = manager.temporaryDirectory.appendingPathComponent("inzone-command-\(UUID().uuidString)")
         try manager.createDirectory(at: directory, withIntermediateDirectories: false,
@@ -339,11 +397,32 @@ public struct SystemCommandRunner: CommandRunning {
         }
         process.waitUntilExit()
         let output = String(decoding: try Data(contentsOf: outputURL), as: UTF8.self)
+        let diagnostics = String(decoding: try Data(contentsOf: errorURL), as: UTF8.self)
         guard !timedOut && process.terminationStatus == 0 else {
-            let diagnostics = String(decoding: try Data(contentsOf: errorURL), as: UTF8.self)
+            logger.log(
+                "command failed: \(arguments.joined(separator: " ")); status=\(process.terminationStatus); "
+                    + "timed_out=\(timedOut); duration=\(Self.duration(since: startedAt)); "
+                    + "output=\(Self.preview(output + diagnostics))"
+            )
             throw CommandError(arguments: arguments, status: process.terminationStatus,
                                output: output + diagnostics, timedOut: timedOut)
         }
+        logger.log(
+            "command finished: \(arguments.joined(separator: " ")); status=0; "
+                + "duration=\(Self.duration(since: startedAt)); output=\(Self.preview(output)); "
+                + "diagnostics=\(Self.preview(diagnostics))"
+        )
         return output
+    }
+
+    private static func duration(since start: TimeInterval) -> String {
+        String(format: "%.3fs", ProcessInfo.processInfo.systemUptime - start)
+    }
+
+    private static func preview(_ output: String) -> String {
+        let limit = 4_096
+        guard output.utf8.count > limit else { return output }
+        let prefix = String(decoding: output.utf8.prefix(limit), as: UTF8.self)
+        return prefix + "... [truncated, total_bytes=\(output.utf8.count)]"
     }
 }

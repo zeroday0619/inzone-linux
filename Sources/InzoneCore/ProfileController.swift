@@ -26,10 +26,17 @@ public final class ProfileController: Sendable {
 
     public let paths: InzonePaths
     public let runner: any CommandRunning
+    private let logger: any DiagnosticLogging
+    private let dspDebugLog: URL?
 
-    public init(paths: InzonePaths, runner: any CommandRunning = SystemCommandRunner()) {
+    public init(
+        paths: InzonePaths, runner: any CommandRunning = SystemCommandRunner(),
+        logger: any DiagnosticLogging = DisabledDiagnosticLogger(), dspDebugLog: URL? = nil
+    ) {
         self.paths = paths
         self.runner = runner
+        self.logger = logger
+        self.dspDebugLog = dspDebugLog
     }
 
     public func status() throws -> String {
@@ -62,7 +69,13 @@ public final class ProfileController: Sendable {
             } catch {
                 let manualError = error
                 try completeRollback(original: manualError, actions: [
-                    { try self.restore(previous.configuration, defaultSink: previous.defaultSink) },
+                    {
+                        try self.restore(
+                            wirePlumber: previous.wirePlumberConfiguration,
+                            pipeWire: previous.pipeWireConfiguration,
+                            defaultSink: previous.defaultSink
+                        )
+                    },
                 ])
                 throw manualError
             }
@@ -102,7 +115,10 @@ public final class ProfileController: Sendable {
             ]
             if let liveState {
                 actions.append {
-                    try self.restore(liveState.configuration, defaultSink: liveState.defaultSink)
+                    try self.restore(
+                        wirePlumber: liveState.wirePlumberConfiguration,
+                        pipeWire: liveState.pipeWireConfiguration, defaultSink: liveState.defaultSink
+                    )
                 }
             }
             try completeRollback(original: changeError, actions: actions)
@@ -129,7 +145,10 @@ public final class ProfileController: Sendable {
             var actions: [() throws -> Void] = [{ try settings.save(previous) }]
             if let liveState {
                 actions.append {
-                    try self.restore(liveState.configuration, defaultSink: liveState.defaultSink)
+                    try self.restore(
+                        wirePlumber: liveState.wirePlumberConfiguration,
+                        pipeWire: liveState.pipeWireConfiguration, defaultSink: liveState.defaultSink
+                    )
                 }
             }
             try completeRollback(original: importError, actions: actions)
@@ -303,7 +322,10 @@ public final class ProfileController: Sendable {
     }
 
     private func restorePersonalizationLiveState(_ state: AppliedProfileState) throws {
-        try restore(state.configuration, defaultSink: state.defaultSink)
+        try restore(
+            wirePlumber: state.wirePlumberConfiguration,
+            pipeWire: state.pipeWireConfiguration, defaultSink: state.defaultSink
+        )
         _ = try Personalization.cleanupRetired(paths: paths)
     }
 
@@ -353,7 +375,9 @@ public final class ProfileController: Sendable {
             if let activatedState {
                 actions.append {
                     try self.restore(
-                        activatedState.configuration, defaultSink: activatedState.defaultSink
+                        wirePlumber: activatedState.wirePlumberConfiguration,
+                        pipeWire: activatedState.pipeWireConfiguration,
+                        defaultSink: activatedState.defaultSink
                     )
                 }
             }
@@ -426,12 +450,21 @@ public final class ProfileController: Sendable {
         try FileLock(url: paths.configDirectory.appendingPathComponent("switch.lock"))
     }
 
-    private func writeActive(_ text: String) throws {
-        try AtomicFile.write(Data(text.utf8), to: paths.activeProfile, permissions: 0o644)
+    private func writeActive(wirePlumber: String, pipeWire: String) throws {
+        try AtomicFile.write(Data(pipeWire.utf8), to: paths.activeDSPProfile, permissions: 0o644)
+        do {
+            try AtomicFile.write(Data(wirePlumber.utf8), to: paths.activeProfile, permissions: 0o644)
+        } catch {
+            try? AtomicFile.write(Data("{}\n".utf8), to: paths.activeDSPProfile, permissions: 0o644)
+            throw error
+        }
     }
 
-    private func restartWirePlumber() throws {
-        let restart = ["systemctl", "--user", "restart", "wireplumber.service"]
+    private func restartAudioServices() throws {
+        let restart = [
+            "systemctl", "--user", "restart", "pipewire.service", "wireplumber.service",
+            "pipewire-pulse.service",
+        ]
         do {
             _ = try runner.run(restart)
         } catch let error as CommandError where !error.timedOut {
@@ -447,7 +480,8 @@ public final class ProfileController: Sendable {
     }
 
     private struct AppliedProfileState {
-        let configuration: String
+        let wirePlumberConfiguration: String
+        let pipeWireConfiguration: String
         let defaultSink: String
     }
 
@@ -462,26 +496,57 @@ public final class ProfileController: Sendable {
             identifier == "restore" ? "original.conf" : resolved!.templateProfile + ".conf"
         )
         let previous = try String(contentsOf: paths.activeProfile, encoding: .utf8)
+        let previousDSP = (try? String(contentsOf: paths.activeDSPProfile, encoding: .utf8)) ?? "{}\n"
         let wasConnected = try isConnected()
         let previousDefault = try runner.run(["pactl", "get-default-sink"])
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let previousState = AppliedProfileState(
-            configuration: previous, defaultSink: previousDefault
+            wirePlumberConfiguration: previous, pipeWireConfiguration: previousDSP,
+            defaultSink: previousDefault
         )
         capturePrevious?(previousState)
         let template = try String(contentsOf: candidate, encoding: .utf8)
-        let rendered = try GraphRenderer(paths: paths).render(profile: identifier, template: template)
-        try writeActive(rendered)
+        let rendered = try GraphRenderer(paths: paths).renderConfigurations(
+            profile: identifier, template: template
+        )
+        try writeActive(wirePlumber: rendered.wirePlumber, pipeWire: rendered.pipeWire)
+        var dspDebugEnvironmentSet = false
+        if let dspDebugLog {
+            _ = try runner.run([
+                "systemctl", "--user", "set-environment", "INZONE_DSP_DEBUG_LOG=\(dspDebugLog.path)",
+            ])
+            dspDebugEnvironmentSet = true
+        }
+        defer {
+            if dspDebugEnvironmentSet {
+                do {
+                    _ = try runner.run([
+                        "systemctl", "--user", "unset-environment", "INZONE_DSP_DEBUG_LOG",
+                    ])
+                } catch {
+                    logger.log("DSP debug environment cleanup failed: \(error.localizedDescription)")
+                }
+            }
+        }
         do {
-            try restartWirePlumber()
-            _ = try runner.run(["systemctl", "--user", "is-active", "wireplumber.service"])
+            try restartAudioServices()
+            _ = try runner.run([
+                "systemctl", "--user", "is-active", "pipewire.service", "wireplumber.service",
+                "pipewire-pulse.service",
+            ])
+            if dspDebugEnvironmentSet {
+                _ = try runner.run([
+                    "systemctl", "--user", "unset-environment", "INZONE_DSP_DEBUG_LOG",
+                ])
+                dspDebugEnvironmentSet = false
+            }
             if wasConnected {
                 try verifyConnectedProfile(identifier)
             }
             return previousState
         } catch {
             do {
-                try restore(previous, defaultSink: previousDefault)
+                try restore(wirePlumber: previous, pipeWire: previousDSP, defaultSink: previousDefault)
             } catch let restorationError {
                 throw rollbackError(original: error, restoration: restorationError)
             }
@@ -489,9 +554,9 @@ public final class ProfileController: Sendable {
         }
     }
 
-    private func restore(_ previous: String, defaultSink: String) throws {
-        try writeActive(previous)
-        try restartWirePlumber()
+    private func restore(wirePlumber: String, pipeWire: String, defaultSink: String) throws {
+        try writeActive(wirePlumber: wirePlumber, pipeWire: pipeWire)
+        try restartAudioServices()
         try restoreDefaultSink(defaultSink)
     }
 
@@ -548,7 +613,9 @@ public final class ProfileController: Sendable {
         ])
         var outputs: [Node] = []
         var available = false
-        for _ in 0..<40 {
+        var lastDiagnostic = "no PipeWire snapshot was received"
+        logger.log("profile verification started: profile=\(name); template=\(template); expected_latency=\(expected)/48000")
+        for attempt in 1...40 {
             let current = try snapshot()
             let nodes = current.nodes
             outputs = nodes.filter { $0.name == Self.game || $0.name == Self.chat }
@@ -565,14 +632,43 @@ public final class ProfileController: Sendable {
                 familyAvailable = names.isDisjoint(with: surroundFamily)
                     && names.isDisjoint(with: downmixFamily)
             }
+            let observedLatencies = outputs
+                .map { "\($0.name)=\($0.latency ?? "missing")" }
+                .sorted().joined(separator: ",")
+            let expectedFamily: Set<String>
+            let forbiddenFamily: Set<String>
+            if profile?.isSurround == true {
+                expectedFamily = surroundFamily
+                forbiddenFamily = downmixFamily
+            } else if expectsDownmix {
+                expectedFamily = downmixFamily
+                forbiddenFamily = surroundFamily
+            } else {
+                expectedFamily = []
+                forbiddenFamily = surroundFamily.union(downmixFamily)
+            }
+            let missingNodes = expectedFamily.subtracting(names).sorted().joined(separator: ",")
+            let unexpectedNodes = forbiddenFamily.intersection(names).sorted().joined(separator: ",")
+            lastDiagnostic = "outputs=\(outputs.count), latencies=[\(observedLatencies)], "
+                + "missing DSP nodes=[\(missingNodes)], unexpected DSP nodes=[\(unexpectedNodes)]"
+            logger.log(
+                "profile verification attempt \(attempt)/40: outputs=\(outputs.count); latencies=[\(observedLatencies)]; "
+                    + "correct_latency=\(correctLatency); family_available=\(familyAvailable); "
+                    + "missing_dsp_nodes=[\(missingNodes)]; unexpected_dsp_nodes=[\(unexpectedNodes)]"
+            )
             if correctLatency && familyAvailable {
                 available = true
+                logger.log("profile verification succeeded on attempt \(attempt)/40")
                 break
             }
             Thread.sleep(forTimeInterval: 0.25)
         }
         guard available else {
-            throw InzoneError.message("H9 II Game/Chat output latency or DSP availability verification failed.")
+            logger.log("profile verification failed after 40 attempts")
+            throw InzoneError.message(
+                "H9 II Game/Chat output latency or DSP availability verification failed: \(lastDiagnostic). "
+                    + "Run with --debug and inspect \(paths.debugLog.path)."
+            )
         }
 
         let target = profile?.isSurround == true ? Self.surround : (
@@ -584,7 +680,9 @@ public final class ProfileController: Sendable {
         let hasEqualizer = options.equalizerEnabled || options.equalizer.contains { $0 != 0 }
         let hasAdditionalDSP = options.drc != 0 || options.outputALC || hasEqualizer
             || options.soundMode == "immersive"
-        if ["fps", "voice", "surround"].contains(template) || hasAdditionalDSP || options.microphoneAGC {
+        let usesVirtualOutput = profile != nil && profile?.isVoice != true
+        if usesVirtualOutput || ["fps", "voice", "surround"].contains(template)
+            || hasAdditionalDSP || options.microphoneAGC {
             // Silence starts the filters without producing an audible verification signal.
             _ = try runner.run([
                 "pw-cat", "-p", "--raw", "--format", "f32", "--rate", "48000",

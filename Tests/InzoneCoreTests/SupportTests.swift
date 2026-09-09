@@ -30,6 +30,51 @@ final class SupportTests: XCTestCase {
         XCTAssertEqual(try JSONSupport.decode(Data(output.utf8)) as? [Int], [1, 2])
     }
 
+    func testDebugLoggerRetainsSuccessfulStandardError() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let log = directory.appendingPathComponent("debug.log")
+        let logger = try DiagnosticLogger(file: log)
+        XCTAssertEqual(
+            try SystemCommandRunner(logger: logger).run([
+                "/bin/sh", "-c", "printf warning >&2; printf result",
+            ]),
+            "result"
+        )
+        XCTAssertTrue(try String(contentsOf: log, encoding: .utf8).contains("diagnostics=warning"))
+    }
+
+    func testDebugLoggerRejectsLeafSymlinkWithoutChangingTarget() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let sentinel = directory.appendingPathComponent("sentinel")
+        let log = directory.appendingPathComponent("debug.log")
+        try Data("sentinel".utf8).write(to: sentinel)
+        try FileManager.default.createSymbolicLink(at: log, withDestinationURL: sentinel)
+
+        XCTAssertThrowsError(try DiagnosticLogger(file: log))
+        XCTAssertEqual(try String(contentsOf: sentinel, encoding: .utf8), "sentinel")
+    }
+
+    func testDebugLoggerRecordsEscapedCommandOutputAndRestrictivePermissions() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let log = directory.appendingPathComponent("state/debug.log")
+        let logger = try DiagnosticLogger(file: log)
+        let output = try SystemCommandRunner(logger: logger).run([
+            "/usr/bin/printf", "%s", "DSP ready\u{001B}",
+        ])
+
+        XCTAssertEqual(output, "DSP ready\u{001B}")
+        let contents = try String(contentsOf: log, encoding: .utf8)
+        XCTAssertTrue(contents.contains("command start: /usr/bin/printf"))
+        XCTAssertTrue(contents.contains("output=DSP ready\\u{001B}"))
+        XCTAssertFalse(contents.contains("DSP ready\u{001B}"))
+        let attributes = try FileManager.default.attributesOfItem(atPath: log.path)
+        XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o600)
+    }
+
     func testAtomicReplacementAndPermissions() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }

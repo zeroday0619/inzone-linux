@@ -3,29 +3,45 @@ import XCTest
 @testable import InzoneCore
 
 final class ProfileControllerTests: XCTestCase {
-    private let restart = ["systemctl", "--user", "restart", "wireplumber.service"]
-    private let active = ["systemctl", "--user", "is-active", "wireplumber.service"]
+    private let restart = [
+        "systemctl", "--user", "restart", "pipewire.service", "wireplumber.service",
+        "pipewire-pulse.service",
+    ]
+    private let active = [
+        "systemctl", "--user", "is-active", "pipewire.service", "wireplumber.service",
+        "pipewire-pulse.service",
+    ]
     private let previousSink = "previous-output"
 
     func testConnectedFPSVerifiesLatencyPrerollAndEQBeforeMarkingManual() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
+        let dspLog = fixture.paths.debugLog
         let runner = ScriptedRunner([
             .output(["pw-dump"], try nodes(latency: 256)),
             .output(["pactl", "get-default-sink"], previousSink + "\n"),
+            .output([
+                "systemctl", "--user", "set-environment", "INZONE_DSP_DEBUG_LOG=\(dspLog.path)",
+            ]),
             .output(restart), .output(active, "active\n"),
+            .output(["systemctl", "--user", "unset-environment", "INZONE_DSP_DEBUG_LOG"]),
             .output(["pw-dump"], try downmixNodes(latency: 128)),
             .output(["pactl", "set-default-sink", GraphRenderer.downmixSink]),
             .silence(target: GraphRenderer.downmixSink),
             .output(["pw-cli", "enum-params", "11", "Props"], "eq0: Gain"),
             .output(["pw-dump"], try downmixNodes(latency: 128)),
         ])
-        let controller = ProfileController(paths: fixture.paths, runner: runner)
+        let controller = ProfileController(paths: fixture.paths, runner: runner, dspDebugLog: dspLog)
 
         try controller.activate("fps")
 
         XCTAssertEqual(try controller.status(), "fps")
         XCTAssertFalse(AutomationStore(paths: fixture.paths).manualToken().isEmpty)
+        let wirePlumber = try String(contentsOf: fixture.paths.activeProfile, encoding: .utf8)
+        let pipeWire = try String(contentsOf: fixture.paths.activeDSPProfile, encoding: .utf8)
+        XCTAssertFalse(wirePlumber.contains("context.modules"))
+        XCTAssertTrue(pipeWire.contains("libpipewire-module-filter-chain"))
+        XCTAssertTrue(pipeWire.contains(GraphRenderer.downmixSink))
         runner.assertFinished()
     }
 
@@ -57,12 +73,21 @@ final class ProfileControllerTests: XCTestCase {
             .output(["pw-dump"], try downmixNodes(latency: 256)),
             .output(["pw-dump"], try downmixNodes(latency: 512, linked: false)),
             .output(["pactl", "set-default-sink", GraphRenderer.downmixSink]),
+            .silence(target: GraphRenderer.downmixSink),
             .output(["pw-dump"], try downmixNodes(latency: 512)),
         ])
 
-        try ProfileController(paths: fixture.paths, runner: runner).activate("music")
+        let logger = RecordingDiagnosticLogger()
+        try ProfileController(paths: fixture.paths, runner: runner, logger: logger).activate("music")
 
         runner.assertFinished()
+        XCTAssertTrue(logger.messages.contains { message in
+            message.contains("attempt 1/40") && message.contains("correct_latency=false")
+        })
+        XCTAssertTrue(logger.messages.contains { message in
+            message.contains("attempt 2/40") && message.contains("correct_latency=true")
+                && message.contains("family_available=true")
+        })
     }
 
     func testDownmixWaitsUntilEveryLayoutSinkIsAvailable() throws {
@@ -75,6 +100,7 @@ final class ProfileControllerTests: XCTestCase {
             .output(["pw-dump"], try downmixNodes(latency: 512, completeFamily: false)),
             .output(["pw-dump"], try downmixNodes(latency: 512)),
             .output(["pactl", "set-default-sink", GraphRenderer.downmixSink]),
+            .silence(target: GraphRenderer.downmixSink),
             .output(["pw-dump"], try downmixNodes(latency: 512)),
         ])
 
@@ -93,6 +119,7 @@ final class ProfileControllerTests: XCTestCase {
             .output(restart), .output(active),
             .output(["pw-dump"], try downmixNodes(latency: 512)),
             .output(["pactl", "set-default-sink", GraphRenderer.downmixSink]),
+            .silence(target: GraphRenderer.downmixSink),
             .output(["pw-dump"], try downmixNodes(latency: 512, linked: false)),
             .output(restart),
             .output(["pactl", "set-default-sink", previousSink]),
@@ -372,6 +399,7 @@ final class ProfileControllerTests: XCTestCase {
         let fixture = try Fixture()
         defer { fixture.remove() }
         let previous = try String(contentsOf: fixture.paths.activeProfile, encoding: .utf8)
+        let previousDSP = try String(contentsOf: fixture.paths.activeDSPProfile, encoding: .utf8)
         let runner = ScriptedRunner([
             .output(["pw-dump"], try nodes(latency: 256)),
             .output(["pactl", "get-default-sink"], previousSink),
@@ -389,6 +417,7 @@ final class ProfileControllerTests: XCTestCase {
         }
 
         XCTAssertEqual(try String(contentsOf: fixture.paths.activeProfile, encoding: .utf8), previous)
+        XCTAssertEqual(try String(contentsOf: fixture.paths.activeDSPProfile, encoding: .utf8), previousDSP)
         XCTAssertEqual(AutomationStore(paths: fixture.paths).manualToken(), "")
         runner.assertFinished()
     }
@@ -1202,12 +1231,16 @@ final class ProfileControllerTests: XCTestCase {
             paths = InzonePaths(home: FileManager.default.temporaryDirectory.appendingPathComponent("inzone-controller-\(UUID().uuidString)"))
             try FileManager.default.createDirectory(at: paths.configDirectory, withIntermediateDirectories: true)
             try FileManager.default.createDirectory(at: paths.activeProfile.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(
+                at: paths.activeDSPProfile.deletingLastPathComponent(), withIntermediateDirectories: true
+            )
             for profile in ProfileController.profiles {
                 let text = "# INZONE profile: \(profile)\n{\"monitor.alsa.rules\": [], \"node.filter-graph.rules\": []}\n"
                 try Data(text.utf8).write(to: paths.configDirectory.appendingPathComponent(profile + ".conf"))
             }
             try Data("{}\n".utf8).write(to: paths.configDirectory.appendingPathComponent("original.conf"))
             try FileManager.default.copyItem(at: paths.configDirectory.appendingPathComponent("balanced.conf"), to: paths.activeProfile)
+            try Data("{}\n".utf8).write(to: paths.activeDSPProfile)
             try FileManager.default.createDirectory(at: paths.assetsDirectory, withIntermediateDirectories: true)
             try FileManager.default.createDirectory(
                 at: paths.pluginURL.deletingLastPathComponent(), withIntermediateDirectories: true
@@ -1270,6 +1303,23 @@ final class ProfileControllerTests: XCTestCase {
     }
 
     /// Test calls are synchronous, and unexpected commands never reach the host session.
+    private final class RecordingDiagnosticLogger: DiagnosticLogging, @unchecked Sendable {
+        private let lock = NSLock()
+        private var recordedMessages: [String] = []
+
+        var messages: [String] {
+            lock.lock()
+            defer { lock.unlock() }
+            return recordedMessages
+        }
+
+        func log(_ message: String) {
+            lock.lock()
+            recordedMessages.append(message)
+            lock.unlock()
+        }
+    }
+
     private final class ScriptedRunner: CommandRunning, @unchecked Sendable {
         private var steps: [Step]
 

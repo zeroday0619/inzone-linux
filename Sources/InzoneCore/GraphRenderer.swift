@@ -1,5 +1,10 @@
 import Foundation
 
+public struct RenderedProfileConfiguration: Sendable {
+    public let wirePlumber: String
+    public let pipeWire: String
+}
+
 public struct GraphRenderer: Sendable {
     public enum InputChannelLayout: String, CaseIterable, Sendable {
         case stereo
@@ -38,7 +43,17 @@ public struct GraphRenderer: Sendable {
     public func render(
         profile: String, template: String, includeVirtualSinks: Bool = true
     ) throws -> String {
-        guard let resolved = try SettingsStore(paths: paths).profileIfAvailable(profile) else { return template }
+        try renderConfigurations(
+            profile: profile, template: template, includeVirtualSinks: includeVirtualSinks
+        ).wirePlumber
+    }
+
+    public func renderConfigurations(
+        profile: String, template: String, includeVirtualSinks: Bool = true
+    ) throws -> RenderedProfileConfiguration {
+        guard let resolved = try SettingsStore(paths: paths).profileIfAvailable(profile) else {
+            return RenderedProfileConfiguration(wirePlumber: template, pipeWire: "{}\n")
+        }
         let options = resolved.options
         let text = template.components(separatedBy: .newlines).filter {
             !$0.trimmingCharacters(in: .whitespaces).hasPrefix("#")
@@ -46,20 +61,19 @@ public struct GraphRenderer: Sendable {
         guard var config = try JSONSupport.decode(Data(text.utf8)) as? [String: Any] else {
             throw InzoneError.message("Profile configuration must be a JSON object")
         }
+        var softwareGraphs: [[String: Any]] = []
         if includeVirtualSinks, resolved.isSurround {
             let assets = options.hrtf == "personal" ? paths.shareDirectory.appendingPathComponent("personal") : paths.assetsDirectory
             guard isFile(assets.appendingPathComponent("manifest.json")) else {
                 throw InzoneError.message("Import HRTF filters before activating surround")
             }
-            let graphs = try InputChannelLayout.allCases.map {
+            softwareGraphs = try InputChannelLayout.allCases.map {
                 try buildSurround(assets: assets, plugin: paths.pluginURL, layout: $0)
             }
-            try installSoftwareDSP(graphs, in: &config)
         } else if includeVirtualSinks, !resolved.isVoice {
-            let graphs = try InputChannelLayout.allCases.map {
+            softwareGraphs = try InputChannelLayout.allCases.map {
                 try buildDownmix(assets: paths.assetsDirectory, plugin: paths.pluginURL, layout: $0)
             }
-            try installSoftwareDSP(graphs, in: &config)
         }
         let plugin = try daemonPlugin()
         var rules: [[String: Any]] = []
@@ -126,7 +140,12 @@ public struct GraphRenderer: Sendable {
             }
         }
         config["node.filter-graph.rules"] = rules
-        return "# INZONE profile: \(profile)\n" + (try JSONSupport.encode(config)) + "\n"
+        var pipeWireConfig: [String: Any] = [:]
+        if !softwareGraphs.isEmpty { try installSoftwareDSP(softwareGraphs, in: &pipeWireConfig) }
+        return RenderedProfileConfiguration(
+            wirePlumber: "# INZONE profile: \(profile)\n" + (try JSONSupport.encode(config)) + "\n",
+            pipeWire: try JSONSupport.encode(pipeWireConfig) + "\n"
+        )
     }
 
     public func buildDownmix(

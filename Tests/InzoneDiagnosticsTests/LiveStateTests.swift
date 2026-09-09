@@ -29,7 +29,10 @@ final class LiveStateTests: XCTestCase {
             switch arguments {
             case ["pactl", "get-default-sink"]: return "initial-sink\n"
             case ["pactl", "get-sink-mute", ProfileController.game]: return mute
-            case ["systemctl", "--user", "restart", "wireplumber.service"] where failRestart:
+            case [
+                "systemctl", "--user", "restart", "pipewire.service", "wireplumber.service",
+                "pipewire-pulse.service",
+            ] where failRestart:
                 throw InzoneError.message("Injected restart failure")
             default: return ""
             }
@@ -44,6 +47,10 @@ final class LiveStateTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: directory) }
         try Data("# INZONE profile: balanced\n{\"custom-preserved-value\":1}\n".utf8).write(to: paths.activeProfile)
         if optionalFiles {
+            try FileManager.default.createDirectory(
+                at: paths.activeDSPProfile.deletingLastPathComponent(), withIntermediateDirectories: true
+            )
+            try Data("{\"saved-dsp\":true}\n".utf8).write(to: paths.activeDSPProfile)
             try Data("{\"balanced\":{\"drc\":1}}\n".utf8).write(to: paths.configDirectory.appendingPathComponent("profile-settings.json"))
             try Data("original-manual-token".utf8).write(to: paths.configDirectory.appendingPathComponent("manual-switch"))
             try Data("[{\"app\":\"saved-game\",\"profile\":\"music\",\"priority\":2}]\n".utf8)
@@ -53,12 +60,18 @@ final class LiveStateTests: XCTestCase {
     }
 
     private func files(_ paths: InzonePaths) -> [URL] {
-        [paths.activeProfile, paths.configDirectory.appendingPathComponent("profile-settings.json"),
+        [paths.activeProfile, paths.activeDSPProfile,
+         paths.configDirectory.appendingPathComponent("profile-settings.json"),
          paths.configDirectory.appendingPathComponent("manual-switch"), AutomationStore(paths: paths).fileURL]
+            .filter { FileManager.default.fileExists(atPath: $0.path) }
     }
 
     private func mutate(_ paths: InzonePaths) throws {
         try Data("# INZONE profile: voice\n{}\n".utf8).write(to: paths.activeProfile)
+        try FileManager.default.createDirectory(
+            at: paths.activeDSPProfile.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+        try Data("{}\n".utf8).write(to: paths.activeDSPProfile)
         try Data("{}\n".utf8).write(to: paths.configDirectory.appendingPathComponent("profile-settings.json"))
         try Data("diagnostic-manual-token".utf8).write(to: paths.configDirectory.appendingPathComponent("manual-switch"))
         try Data("[]\n".utf8).write(to: AutomationStore(paths: paths).fileURL)
@@ -85,7 +98,10 @@ final class LiveStateTests: XCTestCase {
                 let attributes = try FileManager.default.attributesOfItem(atPath: file.path)
                 XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o640)
             }
-            XCTAssertTrue(runner.commands.contains(["systemctl", "--user", "restart", "wireplumber.service"]))
+            XCTAssertTrue(runner.commands.contains([
+                "systemctl", "--user", "restart", "pipewire.service", "wireplumber.service",
+                "pipewire-pulse.service",
+            ]))
             XCTAssertTrue(runner.commands.contains(["pactl", "set-default-sink", "initial-sink"]))
             XCTAssertTrue(runner.commands.contains(["pactl", "set-sink-mute", ProfileController.game, "1"]))
         }
@@ -102,6 +118,7 @@ final class LiveStateTests: XCTestCase {
             }
             XCTAssertEqual(result, "complete")
             XCTAssertEqual(try Data(contentsOf: paths.activeProfile), active)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: paths.activeDSPProfile.path))
             for file in files(paths).dropFirst() {
                 XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
             }
@@ -124,7 +141,10 @@ final class LiveStateTests: XCTestCase {
                 XCTAssertTrue(error.localizedDescription.contains("Restoration also failed"))
             }
             for (file, data) in zip(originalFiles, originalBytes) { XCTAssertEqual(try Data(contentsOf: file), data) }
-            XCTAssertTrue(runner.commands.contains(["systemctl", "--user", "is-active", "wireplumber.service"]))
+            XCTAssertTrue(runner.commands.contains([
+                "systemctl", "--user", "is-active", "pipewire.service", "wireplumber.service",
+                "pipewire-pulse.service",
+            ]))
             XCTAssertTrue(runner.commands.contains(["pactl", "set-default-sink", "initial-sink"]))
             XCTAssertTrue(runner.commands.contains(["pactl", "set-sink-mute", ProfileController.game, "1"]))
         }

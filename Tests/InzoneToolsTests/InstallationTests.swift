@@ -970,7 +970,11 @@ final class InstallationTests: XCTestCase {
                 ".config/wireplumber/wireplumber.conf.d/51-inzone-h9-ii.conf"
             ))
             XCTAssertEqual(active.header, "# INZONE profile: balanced")
-            let activeGraph = try softwareDSPGraph(active.config)
+            XCTAssertNil(active.config["context.modules"])
+            let activeDSP = try profileConfiguration(fixture.home.appendingPathComponent(
+                ".config/pipewire/pipewire.conf.d/51-inzone-h9-ii-dsp.conf"
+            ))
+            let activeGraph = try softwareDSPGraph(activeDSP.config)
             let activeNodes = try XCTUnwrap((activeGraph["filter.graph"] as? [String: Any])?["nodes"] as? [[String: Any]])
             XCTAssertTrue(activeNodes.contains { $0["label"] as? String == "inzone_fir_downmix" })
             let graph = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: data.appendingPathComponent("sony-surround.json"))) as? [String: Any])
@@ -1082,7 +1086,9 @@ final class InstallationTests: XCTestCase {
             }
             let refreshed = try profileConfiguration(active)
             XCTAssertEqual(refreshed.header, "# INZONE profile: music")
-            let graph = try softwareDSPGraph(refreshed.config)
+            XCTAssertNil(refreshed.config["context.modules"])
+            let refreshedDSP = try profileConfiguration(InzonePaths(home: fixture.home).activeDSPProfile)
+            let graph = try softwareDSPGraph(refreshedDSP.config)
             let nodes = try XCTUnwrap((graph["filter.graph"] as? [String: Any])?["nodes"] as? [[String: Any]])
             XCTAssertTrue(nodes.contains { $0["label"] as? String == "inzone_fir_downmix" })
             let backups = try FileManager.default.contentsOfDirectory(at: fixture.home.appendingPathComponent(".local/state/inzone-linux/backups"), includingPropertiesForKeys: nil)
@@ -1112,7 +1118,9 @@ final class InstallationTests: XCTestCase {
             XCTAssertEqual(try Data(contentsOf: collection), previousCollection)
             let refreshed = try profileConfiguration(paths.activeProfile)
             XCTAssertEqual(refreshed.header, "# INZONE profile: \(custom.identifier)")
-            let graph = try softwareDSPGraph(refreshed.config)
+            XCTAssertNil(refreshed.config["context.modules"])
+            let refreshedDSP = try profileConfiguration(paths.activeDSPProfile)
+            let graph = try softwareDSPGraph(refreshedDSP.config)
             let nodes = try XCTUnwrap((graph["filter.graph"] as? [String: Any])?["nodes"] as? [[String: Any]])
             XCTAssertTrue(nodes.contains { $0["label"] as? String == "inzone_fir_downmix" })
         }

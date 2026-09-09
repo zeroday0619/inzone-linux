@@ -173,6 +173,7 @@ final class LiveSessionState {
     private let paths: InzonePaths
     private let runner: any CommandRunning
     private let active: LiveSavedFile
+    private let activeDSP: LiveSavedFile
     private let settings: LiveSavedFile
     private let manual: LiveSavedFile
     private let rules: LiveSavedFile
@@ -183,6 +184,7 @@ final class LiveSessionState {
         self.paths = paths
         self.runner = runner
         active = try LiveSavedFile(paths.activeProfile, required: true)
+        activeDSP = try LiveSavedFile(paths.activeDSPProfile)
         settings = try LiveSavedFile(paths.configDirectory.appendingPathComponent("profile-settings.json"))
         manual = try LiveSavedFile(paths.configDirectory.appendingPathComponent("manual-switch"))
         rules = try LiveSavedFile(AutomationStore(paths: paths).fileURL)
@@ -232,8 +234,19 @@ final class LiveSessionState {
         attempt("Restore DSP settings") { try settings.restore() }
         attempt("Restore automation rules") { try rules.restore() }
         attempt("Restore active profile") { try active.restore() }
-        attempt("Restart WirePlumber") { _ = try runner.run(["systemctl", "--user", "restart", "wireplumber.service"]) }
-        attempt("Verify WirePlumber") { _ = try runner.run(["systemctl", "--user", "is-active", "wireplumber.service"]) }
+        attempt("Restore active DSP profile") { try activeDSP.restore() }
+        attempt("Restart audio services") {
+            _ = try runner.run([
+                "systemctl", "--user", "restart", "pipewire.service", "wireplumber.service",
+                "pipewire-pulse.service",
+            ])
+        }
+        attempt("Verify audio services") {
+            _ = try runner.run([
+                "systemctl", "--user", "is-active", "pipewire.service", "wireplumber.service",
+                "pipewire-pulse.service",
+            ])
+        }
         attempt("Restore default sink") {
             try LiveDiagnosticSupport.retryRouting {
                 _ = try runner.run(["pactl", "set-default-sink", defaultSink])

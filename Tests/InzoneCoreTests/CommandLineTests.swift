@@ -32,12 +32,16 @@ final class CommandLineTests: XCTestCase {
                 try manager.createDirectory(at: paths.configDirectory, withIntermediateDirectories: true)
                 try manager.createDirectory(at: paths.assetsDirectory, withIntermediateDirectories: true)
                 try manager.createDirectory(at: paths.activeProfile.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try manager.createDirectory(
+                    at: paths.activeDSPProfile.deletingLastPathComponent(), withIntermediateDirectories: true
+                )
                 try manager.createDirectory(at: commands, withIntermediateDirectories: true)
                 for name in ["fps", "music", "voice", "balanced", "original"] {
                     let data = try Data(contentsOf: CommandLineTests.repository.appendingPathComponent("configs/\(name).conf"))
                     try data.write(to: paths.configDirectory.appendingPathComponent("\(name).conf"))
                 }
                 try Data(contentsOf: paths.configDirectory.appendingPathComponent("balanced.conf")).write(to: paths.activeProfile)
+                try Data("{}\n".utf8).write(to: paths.activeDSPProfile)
                 try manager.createDirectory(
                     at: paths.pluginURL.deletingLastPathComponent(), withIntermediateDirectories: true
                 )
@@ -79,7 +83,8 @@ final class CommandLineTests: XCTestCase {
 
         @discardableResult
         func command(
-            _ arguments: [String], success: Bool = true, file: StaticString = #filePath, line: UInt = #line
+            _ arguments: [String], success: Bool = true, allowStandardError: Bool = false,
+            file: StaticString = #filePath, line: UInt = #line
         ) throws -> CommandResult {
             let identifier = UUID().uuidString
             let outputURL = directory.appendingPathComponent("stdout-\(identifier)")
@@ -126,7 +131,7 @@ final class CommandLineTests: XCTestCase {
             }
             if success {
                 XCTAssertEqual(result.status, 0, "\(arguments): \(result.error)", file: file, line: line)
-                XCTAssertEqual(result.error, "", file: file, line: line)
+                if !allowStandardError { XCTAssertEqual(result.error, "", file: file, line: line) }
             } else {
                 XCTAssertNotEqual(result.status, 0, "\(arguments)", file: file, line: line)
             }
@@ -198,6 +203,16 @@ final class CommandLineTests: XCTestCase {
             let presets = try fixture.command(["--preset"]).output
             let labels = try XCTUnwrap(JSONSupport.decode(Data(presets.utf8)) as? [String: String])
             XCTAssertNotNil(labels["bass_boost"])
+        }
+    }
+
+    func testGlobalDebugFlagWritesLogAndKeepsCommandAvailable() throws {
+        try withFixture { fixture in
+            let result = try fixture.command(["--debug", "--status"], allowStandardError: true)
+            XCTAssertEqual(result.output, "balanced\n")
+            XCTAssertTrue(result.error.contains("debug mode enabled: command=--status"))
+            let log = try String(contentsOf: fixture.paths.debugLog, encoding: .utf8)
+            XCTAssertTrue(log.contains("debug mode enabled: command=--status"))
         }
     }
 

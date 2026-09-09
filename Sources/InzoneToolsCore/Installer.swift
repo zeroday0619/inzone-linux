@@ -148,6 +148,7 @@ public struct Installer {
             ".local/share/inzone-linux/python", ".config/inzone-h9-ii", ".local/bin/inzone-profile",
             ".config/wireplumber/wireplumber.conf.d/52-inzone-game-chat.conf", ".config/mpv/mpv.conf",
             ".config/systemd/user/inzone-profile-auto.service",
+            ".config/pipewire/pipewire.conf.d/51-inzone-h9-ii-dsp.conf",
         ]
         for path in backupPaths {
             if path == ".config/inzone-h9-ii", !dataExistedBeforeLock { continue }
@@ -166,6 +167,7 @@ public struct Installer {
             paths.pluginURL, data.appendingPathComponent("sony-surround.json"),
             data.appendingPathComponent("surround.conf"),
             wireplumber.appendingPathComponent("52-inzone-game-chat.conf"), paths.activeProfile,
+            paths.activeDSPProfile,
             data.appendingPathComponent("README.md"), data.appendingPathComponent("docs"),
             executable, unit, home.appendingPathComponent(".config/mpv/mpv.conf"),
         ]
@@ -198,8 +200,13 @@ public struct Installer {
                 let template = try String(
                     contentsOf: data.appendingPathComponent(profile.templateProfile + ".conf"), encoding: .utf8
                 )
-                let rendered = try GraphRenderer(paths: paths).render(profile: identifier, template: template)
-                try write(Data(rendered.utf8), to: paths.activeProfile, permissions: 0o644)
+                let rendered = try GraphRenderer(paths: paths).renderConfigurations(
+                    profile: identifier, template: template
+                )
+                try write(Data(rendered.wirePlumber.utf8), to: paths.activeProfile, permissions: 0o644)
+                try write(Data(rendered.pipeWire.utf8), to: paths.activeDSPProfile, permissions: 0o644)
+            } else {
+                try write(Data("{}\n".utf8), to: paths.activeDSPProfile, permissions: 0o644)
             }
             try copy(repository.appendingPathComponent("README.md"), to: data.appendingPathComponent("README.md"))
             try mergeDirectory(repository.appendingPathComponent("docs"), into: data.appendingPathComponent("docs"))

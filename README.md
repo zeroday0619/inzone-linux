@@ -342,6 +342,29 @@ inzone-profile --export my_settings.json
 inzone-profile --import my_settings.json
 ```
 
+### 4. Debug Logging
+
+Add `--debug` anywhere in an `inzone-profile` invocation to record command execution
+and profile verification details. The TUI writes only to the log so terminal rendering
+is not corrupted. Non-TUI commands also copy debug records to standard error.
+
+```sh
+inzone-profile --debug fps
+inzone-profile --debug --set fps drc 2
+INZONE_DEBUG=1 inzone-profile
+tail -f ~/.local/state/inzone-linux/debug.log
+```
+
+The log records Game and Chat node latencies, missing or stale DSP-family nodes,
+PipeWire command output, exit status, timeout state, and duration. DSP instances append
+their plugin index, run count, submitted frames, invalid controls, nonfinite inputs,
+biquad recoveries, and missing-port runs when they are released. Command output is
+escaped and limited to 4 KiB per record. The file is created with mode `0600` because
+diagnostics can include local paths and audio graph properties. Logging remains outside
+the real-time LADSPA callback; it does not add file I/O or locking to DSP processing.
+When debug mode restarts PipeWire, DSP instance and cleanup summaries are also written
+to the service journal and can be inspected with `journalctl --user -u pipewire.service -r`.
+
 ---
 
 ## Automated Profile Switching by Process Detection

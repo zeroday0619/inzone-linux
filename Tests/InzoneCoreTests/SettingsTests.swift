@@ -409,8 +409,11 @@ final class SettingsTests: XCTestCase {
             XCTAssertEqual(capture["node.name"] as? String, GraphRenderer.downmixSevenPointOneSink)
             XCTAssertEqual(capture["node.latency"] as? String, "32/48000")
             XCTAssertEqual(capture["audio.position"] as? [String], GraphRenderer.channels)
-            let rendered = try configuration(renderer.render(profile: "music", template: "{}"))
-            let modules = try XCTUnwrap(rendered["context.modules"] as? [[String: Any]])
+            let rendered = try renderer.renderConfigurations(profile: "music", template: "{}")
+            let wirePlumber = try configuration(rendered.wirePlumber)
+            XCTAssertNil(wirePlumber["context.modules"])
+            let pipeWire = try configuration(rendered.pipeWire)
+            let modules = try XCTUnwrap(pipeWire["context.modules"] as? [[String: Any]])
             XCTAssertEqual(modules.count, 3)
             let layouts = try modules.map { module -> (String, [String]) in
                 let arguments = try XCTUnwrap(module["args"] as? [String: Any])

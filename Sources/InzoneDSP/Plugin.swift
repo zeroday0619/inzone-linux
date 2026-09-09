@@ -14,6 +14,69 @@ private enum PluginKind: Int {
     }
 }
 
+private struct DSPDebugState {
+    var file: Int32 = -1
+    var journalEnabled = false
+    var runCalls: UInt64 = 0
+    var processedFrames: UInt64 = 0
+    var invalidControls: UInt64 = 0
+    var nonfiniteInputs: UInt64 = 0
+    var biquadRecoveries: UInt64 = 0
+    var missingPortRuns: UInt64 = 0
+
+    mutating func open(kind: PluginKind) {
+        guard let path = inzone_dsp_getenv(staticCString("INZONE_DSP_DEBUG_LOG")) else { return }
+        journalEnabled = true
+        file = inzone_dsp_debug_open(path)
+        write(staticCString("inzone-dsp event=instantiate plugin="), count: 36)
+        writeUnsigned(UInt64(kind.rawValue))
+        write(staticCString("\n"), count: 1)
+    }
+
+    mutating func close() {
+        guard journalEnabled else { return }
+        writeMetric("inzone-dsp run_calls=", runCalls)
+        writeMetric("inzone-dsp processed_frames=", processedFrames)
+        writeMetric("inzone-dsp invalid_controls=", invalidControls)
+        writeMetric("inzone-dsp nonfinite_inputs=", nonfiniteInputs)
+        writeMetric("inzone-dsp biquad_recoveries=", biquadRecoveries)
+        writeMetric("inzone-dsp missing_port_runs=", missingPortRuns)
+        write(staticCString("inzone-dsp event=cleanup\n"), count: 25)
+        if file >= 0 { _ = inzone_dsp_close(file) }
+        file = -1
+        journalEnabled = false
+    }
+
+    private func writeMetric(_ name: StaticString, _ value: UInt64) {
+        write(staticCString(name), count: name.utf8CodeUnitCount)
+        writeUnsigned(value)
+        write(staticCString("\n"), count: 1)
+    }
+
+    private func writeUnsigned(_ value: UInt64) {
+        var digits: InlineArray<20, CChar> = .init(repeating: 0)
+        var value = value
+        var count = 0
+        repeat {
+            digits[count] = CChar(value % 10) + 48
+            value /= 10
+            count += 1
+        } while value != 0
+        var output: InlineArray<20, CChar> = .init(repeating: 0)
+        for index in 0..<count { output[index] = digits[count - index - 1] }
+        withUnsafePointer(to: output) { pointer in
+            pointer.withMemoryRebound(to: CChar.self, capacity: count) { write($0, count: count) }
+        }
+    }
+
+    private func write(_ message: UnsafePointer<CChar>, count: Int) {
+        if file >= 0 { inzone_dsp_debug_write(file, message, count) }
+        if journalEnabled, file != STDERR_FILENO {
+            inzone_dsp_debug_write(STDERR_FILENO, message, count)
+        }
+    }
+}
+
 private struct PluginState {
     var kind: PluginKind = .spatial
     var rate = 48_000
@@ -27,11 +90,16 @@ private struct PluginState {
     var dynamicRange = DRCState()
     var automaticLevel = ALCState()
     var fir = FIRState()
+    var debug = DSPDebugState()
 
     @_noLocks
-    func control(_ port: Int, fallback: Float, lower: Float, upper: Float) -> Float {
+    mutating func control(_ port: Int, fallback: Float, lower: Float, upper: Float) -> Float {
         let value = ports[port]?.pointee ?? fallback
-        return value.isFinite ? dspMaximumFloat(lower, dspMinimumFloat(upper, value)) : fallback
+        guard value.isFinite else {
+            debug.invalidControls &+= 1
+            return fallback
+        }
+        return dspMaximumFloat(lower, dspMinimumFloat(upper, value))
     }
 
     @_noLocks
@@ -109,6 +177,7 @@ private struct PluginState {
         }
         let result = Float(output)
         guard output.isFinite, result.isFinite else {
+            debug.biquadRecoveries &+= 1
             history = .init(repeating: 0)
             return 0
         }
@@ -152,7 +221,9 @@ private func instantiate(_ descriptor: UnsafePointer<LADSPA_Descriptor>?,
     state.initialize(to: PluginState())
     state.pointee.kind = kind
     state.pointee.rate = Int(rate)
+    state.pointee.debug.open(kind: kind)
     if let bank = kind.firBank, !state.pointee.fir.initialize(bank: bank) {
+        state.pointee.debug.close()
         state.deinitialize(count: 1)
         free(memory)
         return nil
@@ -181,11 +252,16 @@ private func activate(_ handle: LADSPA_Handle?) {
 private func run(_ handle: LADSPA_Handle?, _ frames: CUnsignedLong) {
     guard let handle, frames <= CUnsignedLong(Int.max) else { return }
     let state = handle.assumingMemoryBound(to: PluginState.self)
+    state.pointee.debug.runCalls &+= 1
+    state.pointee.debug.processedFrames &+= UInt64(frames)
     state.pointee.configure(force: false)
     if state.pointee.kind.firBank != nil {
         if let latency = state.pointee.ports[10] { latency.pointee = 0 }
         guard frames > 0, let outputLeft = state.pointee.ports[8],
-              let outputRight = state.pointee.ports[9] else { return }
+              let outputRight = state.pointee.ports[9] else {
+            state.pointee.debug.missingPortRuns &+= 1
+            return
+        }
         for frame in 0..<Int(frames) {
             // Every input is captured before either output is written for aliased hosts.
             var inputs: InlineArray<8, Float> = .init(repeating: 0)
@@ -202,17 +278,29 @@ private func run(_ handle: LADSPA_Handle?, _ frames: CUnsignedLong) {
     let mono = state.pointee.kind == .microphone || state.pointee.kind == .biquad
         || state.pointee.kind == .equalizerBiquad
     guard frames > 0, let inputLeft = state.pointee.ports[0],
-          let outputLeft = state.pointee.ports[mono ? 1 : 2] else { return }
+          let outputLeft = state.pointee.ports[mono ? 1 : 2] else {
+        state.pointee.debug.missingPortRuns &+= 1
+        return
+    }
     let inputRight = state.pointee.ports[1]
     let outputRight = state.pointee.ports[3]
-    if !mono && (inputRight == nil || outputRight == nil) { return }
+    if !mono && (inputRight == nil || outputRight == nil) {
+        state.pointee.debug.missingPortRuns &+= 1
+        return
+    }
 
     for frame in 0..<Int(frames) {
         // Both channels are read before either output is written for in-place hosts.
         var left = inputLeft[frame]
         var right: Float = mono ? 0 : inputRight![frame]
-        if !left.isFinite { left = 0 }
-        if !right.isFinite { right = 0 }
+        if !left.isFinite {
+            state.pointee.debug.nonfiniteInputs &+= 1
+            left = 0
+        }
+        if !right.isFinite {
+            state.pointee.debug.nonfiniteInputs &+= 1
+            right = 0
+        }
         switch state.pointee.kind {
         case .firStandard, .firPersonal, .firDownmix:
             break
@@ -234,6 +322,7 @@ private func run(_ handle: LADSPA_Handle?, _ frames: CUnsignedLong) {
 private func cleanup(_ handle: LADSPA_Handle?) {
     guard let handle else { return }
     let state = handle.assumingMemoryBound(to: PluginState.self)
+    state.pointee.debug.close()
     state.pointee.fir.release()
     state.deinitialize(count: 1)
     free(handle)

@@ -12,6 +12,7 @@ struct InzoneCommand {
     No arguments: open the SwiftTUI terminal interface.
     Profiles: fps | music | voice | balanced | surround | restore
     --tui, --gui                         Open the terminal interface
+    --debug                             Enable command and DSP verification logging
     --status                            Print the active profile
     --list, --help, -h                   Print this help
     --settings                          Print saved DSP settings
@@ -71,9 +72,26 @@ struct InzoneCommand {
     }
 
     static func execute(_ arguments: [String]) throws {
+        var arguments = arguments
+        let debugFlagCount = arguments.filter { $0 == "--debug" }.count
+        guard debugFlagCount <= 1 else {
+            throw InzoneError.message("Specify --debug only once.")
+        }
+        arguments.removeAll { $0 == "--debug" }
         let command = arguments.first ?? "--tui"
         let paths = InzonePaths()
-        let controller = ProfileController(paths: paths)
+        let debugEnabled = debugFlagCount == 1 || ProcessInfo.processInfo.environment["INZONE_DEBUG"] == "1"
+        let logger: any DiagnosticLogging = debugEnabled
+            ? try DiagnosticLogger(
+                file: paths.debugLog,
+                echoToStandardError: command != "--tui" && command != "--gui"
+            )
+            : DisabledDiagnosticLogger()
+        if debugEnabled { logger.log("debug mode enabled: command=\(command); log=\(paths.debugLog.path)") }
+        let controller = ProfileController(
+            paths: paths, runner: SystemCommandRunner(logger: logger), logger: logger,
+            dspDebugLog: debugEnabled ? paths.debugLog : nil
+        )
         let settings = SettingsStore(paths: paths)
         let automation = AutomationStore(paths: paths)
         let presets = SonyPresets(paths: paths)

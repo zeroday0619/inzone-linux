@@ -88,8 +88,9 @@ struct TerminalSessionTests {
         defer { try? manager.removeItem(at: home) }
         let config = home.appendingPathComponent(".config/inzone-h9-ii")
         let wireplumber = home.appendingPathComponent(".config/wireplumber/wireplumber.conf.d")
+        let pipewire = home.appendingPathComponent(".config/pipewire/pipewire.conf.d")
         let binaries = home.appendingPathComponent("bin")
-        for directory in [config, wireplumber, binaries] {
+        for directory in [config, wireplumber, pipewire, binaries] {
             try manager.createDirectory(at: directory, withIntermediateDirectories: true)
         }
         for name in ["fps", "music", "voice", "balanced", "original"] {
@@ -101,6 +102,7 @@ struct TerminalSessionTests {
         let active = wireplumber.appendingPathComponent("51-inzone-h9-ii.conf")
         let original = try Data(contentsOf: config.appendingPathComponent("balanced.conf"))
         try original.write(to: active)
+        try Data("{}\n".utf8).write(to: pipewire.appendingPathComponent("51-inzone-h9-ii-dsp.conf"))
         let commands = home.appendingPathComponent("commands.log")
         let commandScript = "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \(quoted(commands.path))\nexit 1\n"
         // The fixture blocks every external audio mutation even if a key is misrouted.

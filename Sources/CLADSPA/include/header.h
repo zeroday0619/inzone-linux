@@ -39,6 +39,22 @@ int inzone_dsp_fstat(int file, struct stat *status) __asm__("fstat");
 int *inzone_dsp_errno_location(void) __asm__("__errno_location");
 char *inzone_dsp_getenv(const char *name) __asm__("getenv");
 
+int inzone_dsp_debug_open(const char *path);
+
+static inline void inzone_dsp_debug_write(int file, const char *message, size_t count) {
+    while (count > 0) {
+        ssize_t result = write(file, message, count);
+        if (result > 0) {
+            message += result;
+            count -= (size_t)result;
+        } else if (result < 0 && errno == EINTR) {
+            continue;
+        } else {
+            return;
+        }
+    }
+}
+
 enum {
     INZONE_DSP_DIRECTORY_FLAGS = O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC,
     INZONE_DSP_FILE_FLAGS = O_RDONLY | O_NOFOLLOW | O_CLOEXEC,
