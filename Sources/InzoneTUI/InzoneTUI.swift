@@ -28,10 +28,10 @@ public enum InzoneTerminal {
 }
 
 private let profileNames = ["fps", "music", "voice", "balanced", "surround", "restore"]
-private let profileTitles = ["FPS", "음악", "통화", "기본", "서라운드", "변경 전 설정 복원"]
+private let profileTitles = ["FPS", "Music", "Voice", "Balanced", "Surround", "Restore Defaults"]
 private let profileDescriptions = [
-    "저음 감소 / 발소리 대역 강조", "원음 / 안정성 우선", "말소리 강조 / 마이크 저역 정리",
-    "EQ 없음 / 균형 설정", "Sony HRTF / 7.1 입력", "저장된 음색·지연을 복원합니다. Game/Chat은 유지합니다.",
+    "Reduced bass / Footstep emphasis", "Original sound / Stability priority", "Voice clarity / Mic low-cut",
+    "No EQ / Balanced tuning", "Sony HRTF / 7.1 input", "Restores saved tone and latency. Preserves Game/Chat balance.",
 ]
 private let equalizerFrequencies = ["31.5", "63", "125", "250", "500", "1k", "2k", "4k", "8k", "16k"]
 
@@ -92,9 +92,9 @@ private struct DeviceRow: Sendable {
 
 private struct DeviceScreenState: Sendable {
     var rows: [DeviceRow] = []
-    var battery = "배터리: ?"
-    var firmware = "펌웨어: ?"
-    var message = "장치 상태를 읽고 있습니다."
+    var battery = "Battery: ?"
+    var firmware = "Firmware: ?"
+    var message = "Reading device status..."
     var monitoring = false
 }
 
@@ -150,14 +150,14 @@ private actor TerminalWorker {
             let actions = rules?.first?["actions"] as? [String: Any]
             let properties = actions?["update-props"] as? [String: Any]
             let latency = (properties?["node.latency"] as? String ?? "").split(separator: "/")
-            var result = ["출력: 48 kHz / 16 bit · 스테레오"]
+            var result = ["Output: 48 kHz / 16 bit · Stereo"]
             if latency.count == 2, let samples = Double(latency[0]), let rate = Double(latency[1]), rate > 0 {
-                result.append(String(format: "처리 주기 요청: %.0f 샘플 (%.2f ms)", samples, samples / rate * 1000))
+                result.append(String(format: "Latency request: %.0f samples (%.2f ms)", samples, samples / rate * 1000))
             }
             let suspend = properties?["session.suspend-timeout-seconds"] as? Int ?? 5
-            result.append(suspend == 0 ? "출력 절전: 해제" : "출력 절전: \(suspend)초 후")
+            result.append(suspend == 0 ? "Output suspend: Disabled" : "Output suspend: \(suspend)s")
             return result
-        } catch { return ["설정 파일 확인 실패: \(error.localizedDescription)"] }
+        } catch { return ["Failed to read config file: \(error.localizedDescription)"] }
     }
 
     func activate(_ name: String) throws { try controller.activate(name) }
@@ -214,31 +214,31 @@ private actor TerminalWorker {
             }
             if let battery = snapshot["battery"] as? [String: Any] {
                 let percent = battery["percent"].map { String(describing: $0) } ?? "?"
-                result.battery = "배터리: \(percent)% · " + ((battery["state"] as? String) == "charging" ? "충전 중" : "배터리 사용")
+                result.battery = "Battery: \(percent)% · " + ((battery["state"] as? String) == "charging" ? "Charging" : "Discharging")
             }
             if let firmware = snapshot["firmware"] as? [String: String] {
-                result.firmware = "펌웨어: 헤드셋 \(firmware["headset"] ?? "?") / 동글 \(firmware["dongle"] ?? "?")"
+                result.firmware = "Firmware: Headset \(firmware["headset"] ?? "?") / Dongle \(firmware["dongle"] ?? "?")"
             }
-            if snapshot["connected"] as? Bool != true { messages.append("헤드셋 연결을 기다리고 있습니다.") }
+            if snapshot["connected"] as? Bool != true { messages.append("Waiting for headset connection...") }
         } catch {
             device?.close()
             device = nil
             messages.append(error.localizedDescription)
         }
         do { result.rows += try hostRows() } catch { messages.append(error.localizedDescription) }
-        result.message = messages.isEmpty ? "←→: 값 선택 후 Enter로 적용합니다." : messages.joined(separator: " · ")
+        result.message = messages.isEmpty ? "←→: Select value, press Enter to apply." : messages.joined(separator: " · ")
         result.monitoring = monitor.isRunning
         return result
     }
 
     func hostRows() throws -> [DeviceRow] {
         let levels = try InzoneDevice.hostLevels(runner: controller.runner)
-        return [("game_volume", "게임 출력 음량"), ("chat_volume", "채팅 출력 음량"),
-                ("mic_volume", "마이크 입력 음량"), ("mic_mute", "마이크 음소거")].compactMap { key, label in
+        return [("game_volume", "Game output volume"), ("chat_volume", "Chat output volume"),
+                ("mic_volume", "Microphone input volume"), ("mic_mute", "Microphone mute")].compactMap { key, label in
             guard let value = levels[key] else { return nil }
             return DeviceRow(key: key, label: label, value: value,
                              values: key == "mic_mute" ? [0, 1] : Array(0...100),
-                             labels: key == "mic_mute" ? ["끔", "켬"] : [], host: true)
+                             labels: key == "mic_mute" ? ["Off", "On"] : [], host: true)
         }
     }
 
@@ -246,10 +246,10 @@ private actor TerminalWorker {
         if row.host {
             try InzoneDevice.setHostField(row.key, value: value, runner: controller.runner)
             guard try hostRows().first(where: { $0.key == row.key })?.value == value else {
-                throw TerminalFailure.invalid("오디오 서버가 요청한 값을 적용하지 않았습니다.")
+                throw TerminalFailure.invalid("Audio server did not apply the requested value.")
             }
         } else {
-            guard let device else { throw TerminalFailure.invalid("장치를 먼저 새로 읽으세요.") }
+            guard let device else { throw TerminalFailure.invalid("Refresh device status first.") }
             try device.setField(row.key, value: value)
         }
     }
@@ -280,7 +280,7 @@ final class TerminalModel {
     private let worker: TerminalWorker?
     var screen = TerminalScreen.profiles
     var selected = 0
-    var message = "선택 후 Enter를 누르면 적용합니다."
+    var message = "Select and press Enter to apply."
     var busy = false
     var equalizer = Array(repeating: 0.0, count: 10)
     var equalizerIndex = 0
@@ -317,13 +317,13 @@ final class TerminalModel {
     }
 
     fileprivate var details: [String] {
-        if profile == "restore" { return ["음색 보정: 없음", "출력: 48 kHz / 16 bit"] }
-        var lines = profileState.details[profile] ?? ["출력: 48 kHz / 16 bit · 스테레오"]
-        if profile == "surround" { lines[0] = "7.1 입력 → " + (options.hrtf == "personal" ? "개인화 HRTF" : "Sony 기본 HRTF") + " → Game 출력" }
-        var sound = options.soundMode == "immersive" ? "Sony 몰입 음장" : (options.baseEqualizer ? profileDescriptions[selected] : "기본 출력 EQ 해제")
-        if options.equalizerEnabled || options.equalizer.contains(where: { $0 != 0 }) { sound += " · Sony 10밴드 EQ" }
+        if profile == "restore" { return ["Tone correction: None", "Output: 48 kHz / 16 bit"] }
+        var lines = profileState.details[profile] ?? ["Output: 48 kHz / 16 bit · Stereo"]
+        if profile == "surround" { lines[0] = "7.1 Input → " + (options.hrtf == "personal" ? "Personalized HRTF" : "Sony Default HRTF") + " → Game Output" }
+        var sound = options.soundMode == "immersive" ? "Sony Immersive Soundstage" : (options.baseEqualizer ? profileDescriptions[selected] : "Base Output EQ Disabled")
+        if options.equalizerEnabled || options.equalizer.contains(where: { $0 != 0 }) { sound += " · Sony 10-band EQ" }
         lines.append(sound)
-        lines.append("DRC: \(["끔", "낮음", "높음"][min(2, max(0, options.drc))]) · 출력 ALC: \(options.outputALC ? "켬" : "끔") · 마이크 AGC: \(options.microphoneAGC ? "켬" : "끔")")
+        lines.append("DRC: \(["Off", "Low", "High"][min(2, max(0, options.drc))]) · Output ALC: \(options.outputALC ? "On" : "Off") · Mic AGC: \(options.microphoneAGC ? "On" : "Off")")
         return lines
     }
 
@@ -357,7 +357,7 @@ final class TerminalModel {
                 automationIndex = min(automationIndex, max(0, state.rules.count - 1))
             default: break
             }
-        } catch { message = "실패: \(error.localizedDescription)" }
+        } catch { message = "Failed: \(error.localizedDescription)" }
     }
 
     func tick() async {
@@ -368,7 +368,7 @@ final class TerminalModel {
     func requestTermination(_ terminate: @escaping @MainActor () -> Void) {
         if busy {
             idleTermination = terminate
-            message = "현재 작업을 마친 후 종료합니다."
+            message = "Exiting after completing the current task..."
         } else { terminate() }
     }
 
@@ -380,10 +380,10 @@ final class TerminalModel {
     ) {
         guard !busy, let worker else { return }
         busy = true
-        message = "처리 중…"
+        message = "Processing..."
         Task {
             do { try await operation(worker); onSuccess(); message = success }
-            catch { message = "실패: \(error.localizedDescription)" }
+            catch { message = "Failed: \(error.localizedDescription)" }
             if refreshAfter { await refresh(force: true) }
             busy = false
             let terminate = idleTermination
@@ -394,7 +394,7 @@ final class TerminalModel {
 
     private func change(_ change: OptionChange) {
         let name = profile
-        perform("설정 적용 완료") { try await $0.change(name, change) }
+        perform("Settings applied successfully") { try await $0.change(name, change) }
     }
 
     private func openPrompt(_ purpose: PromptPurpose, title: String, value: String = "") {
@@ -410,20 +410,20 @@ final class TerminalModel {
         if case .rulePriority = promptPurpose, value.isEmpty { value = "0" }
         guard !value.isEmpty else { screen = promptReturn; return }
         switch promptPurpose {
-        case .hki: openPrompt(.ba(value), title: "H9 II 개인화용 YY2987.ba 파일 경로")
+        case .hki: openPrompt(.ba(value), title: "Path to H9 II personalized YY2987.ba file")
         case .ba(let hki):
             let ba = value
             screen = .profiles
-            perform("개인화 파일 가져오기 완료") { try await $0.personalize(hki: hki, ba: ba) }
+            perform("Personalization files imported successfully") { try await $0.personalize(hki: hki, ba: ba) }
         case .ruleApp:
-            openPrompt(.ruleProfile(value), title: "대상: fps / music / voice / balanced / surround")
+            openPrompt(.ruleProfile(value), title: "Target: fps / music / voice / balanced / surround")
         case .ruleProfile(let app):
-            guard profileNames.dropLast().contains(value) else { message = "올바른 대상 프로파일을 입력하세요."; return }
-            openPrompt(.rulePriority(app, value), title: "우선순위 −1000~1000 (기본 0)", value: "0")
+            guard profileNames.dropLast().contains(value) else { message = "Enter a valid target profile."; return }
+            openPrompt(.rulePriority(app, value), title: "Priority -1000 to 1000 (default 0)", value: "0")
         case .rulePriority(let app, let profile):
-            guard let priority = Int(value), (-1000...1000).contains(priority) else { message = "우선순위 범위: −1000~1000"; return }
+            guard let priority = Int(value), (-1000...1000).contains(priority) else { message = "Priority range: -1000 to 1000"; return }
             screen = .automation
-            perform("자동 전환 규칙 저장 완료") { try await $0.editRule(app: app, profile: profile, priority: priority) }
+            perform("Auto-switching rule saved successfully") { try await $0.editRule(app: app, profile: profile, priority: priority) }
         }
     }
 
@@ -445,7 +445,7 @@ final class TerminalModel {
                     Task { await worker.stopMonitor(); await worker.closeDevice() }
                 }
                 screen = .profiles
-                message = "선택 후 Enter를 누르면 적용합니다."
+                message = "Select and press Enter to apply."
             }
             return .handled
         }
@@ -459,18 +459,18 @@ final class TerminalModel {
             else if let number = Int(character), (1...6).contains(number) { selected = number - 1; initialSelection = false }
             else if enter {
                 let name = profile
-                perform("적용 완료: \(title)") { try await $0.activate(name) }
+                perform("Applied: \(title)") { try await $0.activate(name) }
             } else if character == "h" {
                 screen = .device; devicePending = nil
                 Task { await refresh() }
             } else if character == "u" {
                 screen = .automation
                 Task { await refresh() }
-            } else if character == "i" { openPrompt(.hki, title: "개인화 HKI 파일 경로 (빈 입력: 취소)") }
+            } else if character == "i" { openPrompt(.hki, title: "Path to personalized HKI file (empty to cancel)") }
             else if ["d", "a", "m", "p", "e", "s"].contains(character) {
-                guard profile != "restore" else { message = "편집할 프로파일을 선택하세요."; return .handled }
+                guard profile != "restore" else { message = "Select a profile to edit."; return .handled }
                 guard worker == nil || profileState.options[profile] != nil else {
-                    message = "설정 상태를 먼저 읽어야 합니다."
+                    message = "Must read settings status first."
                     return .handled
                 }
                 switch character {
@@ -479,7 +479,7 @@ final class TerminalModel {
                 case "m": change(.microphoneAGC(!options.microphoneAGC))
                 case "p":
                     if profile == "surround" { change(.hrtf(options.hrtf == "standard" ? "personal" : "standard")) }
-                    else { message = "서라운드 프로파일에서 HRTF를 선택하세요." }
+                    else { message = "Select HRTF in the surround profile." }
                 case "e": equalizer = options.equalizer; equalizerIndex = 0; screen = .equalizer
                 case "s": presetIndex = 0; screen = .presets
                 default: break
@@ -499,12 +499,12 @@ final class TerminalModel {
             else if enter {
                 let name = profile, preset = SonyPresets.names[presetIndex]
                 screen = .profiles
-                perform("Sony 프리셋 적용 완료") { try await $0.preset(name, name: preset) }
+                perform("Sony preset applied successfully") { try await $0.preset(name, name: preset) }
             } else { return .ignored }
         case .device:
             if character == "r" { devicePending = nil; Task { await refresh() } }
             else if character == "t" {
-                perform("마이크 테스트 상태 변경 완료", onSuccess: {
+                perform("Microphone test state changed", onSuccess: {
                     self.deviceState.monitoring = self.worker?.monitoring() ?? false
                 }, refreshAfter: false) { _ = try await $0.toggleMonitor() }
             } else if !deviceRows.isEmpty {
@@ -516,7 +516,7 @@ final class TerminalModel {
                     devicePending = row.values[min(row.values.count - 1, max(0, index + (key.key == .rightArrow ? 1 : -1)))]
                 } else if enter, let value = devicePending {
                     let row = deviceRows[deviceIndex]
-                    perform("적용·조회 확인 완료", onSuccess: { self.devicePending = nil }) {
+                    perform("Setting applied and verified", onSuccess: { self.devicePending = nil }) {
                         try await $0.setDevice(row, value: value)
                     }
                 } else { return .ignored }
@@ -524,13 +524,13 @@ final class TerminalModel {
         case .automation:
             if up { automationIndex = max(0, automationIndex - 1) }
             else if down { automationIndex = min(max(0, automationRules.count - 1), automationIndex + 1) }
-            else if character == "a" { openPrompt(.ruleApp, title: "실행 파일 이름/경로 (예: game.exe, 빈 입력: 취소)") }
+            else if character == "a" { openPrompt(.ruleApp, title: "Executable name/path (e.g. game.exe, empty to cancel)") }
             else if character == "d", !automationRules.isEmpty {
                 let app = automationRules[automationIndex].app
-                perform("자동 전환 규칙 삭제 완료") { try await $0.editRule(app: app, profile: nil) }
+                perform("Auto-switching rule deleted successfully") { try await $0.editRule(app: app, profile: nil) }
             } else if character == " " {
                 let enable = !automationActive
-                perform(enable ? "자동 전환 시작 완료" : "자동 전환 중지 완료") { try await $0.automationService(enable: enable) }
+                perform(enable ? "Auto-switching started" : "Auto-switching stopped") { try await $0.automationService(enable: enable) }
             } else { return .ignored }
         case .prompt: return .ignored
         }
@@ -555,8 +555,8 @@ private struct TerminalRoot: View {
             VStack(alignment: .leading, spacing: 0) {
                 if geometry.columns < 72 || geometry.rows < 24 {
                     Text("INZONE H9 II").bold()
-                    Text("터미널을 72열 × 24행 이상으로 넓혀 주세요.")
-                    Text("Q / Esc: 종료")
+                    Text("Please resize terminal to at least 72 columns × 24 rows.")
+                    Text("Q / Esc: Quit")
                 } else {
                     screen(rows: geometry.rows - 2)
                 }
@@ -587,20 +587,20 @@ private struct TerminalRoot: View {
     private func screen(rows: Int) -> some View {
         switch model.screen {
         case .profiles:
-            Text("INZONE H9 II / 프로파일").bold().foregroundStyle(.cyan)
-            line("현재 적용: " + model.current)
+            Text("INZONE H9 II / Profiles").bold().foregroundStyle(.cyan)
+            line("Active: " + model.current)
             Divider()
             ForEach(0..<6) { index in
-                row("\(index + 1)  \(profileTitles[index])" + (model.isActive(index) ? "  [적용 중]" : ""), selected: index == model.selected)
+                row("\(index + 1)  \(profileTitles[index])" + (model.isActive(index) ? "  [Active]" : ""), selected: index == model.selected)
             }
             Divider()
             line(profileDescriptions[model.selected])
             ForEach(Array(model.details.enumerated()), id: \.offset) { _, detail in line(detail) }
             Spacer(minLength: 0)
-            line("D: DRC  A: 출력 ALC  M: 마이크 AGC  P: 기본/개인화")
-            line("E: EQ  S: 프리셋  H: 장치  U: 자동  I: 개인화 파일")
+            line("D: DRC  A: Output ALC  M: Mic AGC  P: Standard/Personal")
+            line("E: EQ  S: Presets  H: Device  U: Automation  I: Personalization")
             line(model.message)
-            line("↑↓ / J K: 선택  1–6: 선택  Enter: 적용  Q / Esc: 종료")
+            line("↑↓ / J K: Select  1–6: Select  Enter: Apply  Q / Esc: Quit")
         case .equalizer:
             Text("10-band EQ / " + model.title).bold()
             Divider()
@@ -608,22 +608,22 @@ private struct TerminalRoot: View {
                 row(String(format: "%5@ Hz   %+5.1f dB", equalizerFrequencies[index], model.equalizer[index]), selected: index == model.equalizerIndex)
             }
             Spacer(minLength: 0)
-            line("↑↓: 대역  ←→: 1 dB  0: 초기화")
-            line("Enter: 저장·적용  Esc / Q: 취소")
+            line("↑↓: Band  ←→: 1 dB  0: Reset")
+            line("Enter: Save & Apply  Esc / Q: Cancel")
         case .presets:
-            Text("Sony EQ 프리셋 / " + model.title).bold()
+            Text("Sony EQ Presets / " + model.title).bold()
             Divider()
             ForEach(Array(SonyPresets.names.enumerated()), id: \.offset) { index, name in
                 row(SonyPresets.labels[name] ?? name, selected: index == model.presetIndex)
             }
             Spacer(minLength: 0)
-            line("Sony 프리셋은 기존 Linux 음색 EQ를 대체합니다.")
-            line("↑↓ 선택 · Enter 적용 · Esc / Q 취소")
+            line("Sony presets replace existing Linux tone EQ.")
+            line("↑↓: Select · Enter: Apply · Esc / Q: Cancel")
         case .device:
-            Text("INZONE H9 II / 장치 설정").bold()
+            Text("INZONE H9 II / Device Settings").bold()
             line(model.deviceSummary.battery)
             line(model.deviceSummary.firmware)
-            line("장치 설정은 모든 프로파일에 공통으로 적용됩니다.")
+            line("Device settings apply globally across all profiles.")
             Divider()
             let count = max(1, rows - 10)
             let first = max(0, min(model.deviceIndex - count + 1, max(0, model.deviceRows.count - count)))
@@ -632,23 +632,23 @@ private struct TerminalRoot: View {
                     + (index == model.deviceIndex && model.devicePending != nil ? " *" : ""), selected: index == model.deviceIndex)
             }
             Spacer(minLength: 0)
-            line(model.deviceSummary.monitoring ? "마이크 테스트 재생 중 (최대 30초)" : model.deviceSummary.message)
+            line(model.deviceSummary.monitoring ? "Microphone test playing (up to 30s)" : model.deviceSummary.message)
             line(model.message)
-            line("↑↓: 항목  ←→: 값  Enter: 적용  R: 새로 읽기")
-            line("T: 마이크 듣기 시작/중지  Esc / Q: 돌아가기")
+            line("↑↓: Item  ←→: Value  Enter: Apply  R: Refresh")
+            line("T: Toggle Mic Monitor  Esc / Q: Back")
         case .automation:
-            Text("자동 프로파일 / " + (model.automationActive ? "실행 중" : "꺼짐")).bold()
+            Text("Auto Profiles / " + (model.automationActive ? "Running" : "Stopped")).bold()
             Divider()
             let count = max(1, rows - 7)
             let first = max(0, model.automationIndex - count + 1)
-            if model.automationRules.isEmpty { line("등록된 규칙이 없습니다.") }
+            if model.automationRules.isEmpty { line("No registered rules.") }
             ForEach(Array(model.automationRules.enumerated().dropFirst(first).prefix(count)), id: \.element.app) { index, rule in
                 row("\(rule.priority)  \(rule.app) → \(rule.profile)", selected: index == model.automationIndex)
             }
             Spacer(minLength: 0)
             line(model.message)
-            line("A: 규칙 추가/수정  D: 삭제  Space: 자동 전환 켜기/끄기")
-            line("높은 우선순위 먼저 · 동률은 목록 순서 · Esc / Q: 돌아가기")
+            line("A: Add/Edit Rule  D: Delete  Space: Toggle Auto-switch")
+            line("Higher priority first · Ties in list order · Esc / Q: Back")
         case .prompt:
             PromptView(model: model)
         }
@@ -677,7 +677,7 @@ private struct PromptView: View {
                 .focused($focused)
                 .onSubmit { model.submitPrompt() }
             Text(terminalText(model.message)).lineLimit(1)
-            Text("Enter: 다음/저장  Esc: 취소")
+            Text("Enter: Next/Save  Esc: Cancel")
         }
         .onAppear { focused = true }
         .onChange(of: model.promptTitle) { _, _ in focused = true }

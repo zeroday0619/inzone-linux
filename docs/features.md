@@ -1,87 +1,87 @@
-# 기능 명세 및 구현 현황 (Feature Specification)
+# Feature Specification & Implementation Status
 
-Sony 공식 유틸리티인 **INZONE Hub 1.0.19.0**의 기능을 기준으로, 본 프로젝트(PipeWire / WirePlumber / Swift LADSPA 기반)에서 구현된 기능과 지원 범위, 기술적 세부 명세를 정리한 문서입니다.
+This document details the feature parity, implementation scope, and technical specifications of this project (based on PipeWire, WirePlumber, and Swift LADSPA) compared against Sony official utility, **INZONE Hub 1.0.19.0**.
 
 ---
 
-## 1. 음향 및 DSP 신호 처리 (Audio & DSP)
+## 1. Audio & DSP Signal Processing
 
-| 기능 항목 | 지원 상태 | 세부 설명 | 검증 경로 |
+| Feature | Status | Description | Verification Path |
 |---|:---:|---|---|
-| **7.1ch 가상 서라운드** | 지원 | 소니 공식 512-tap FIR HRTF 필터를 적용하여 7.1ch(FL, FR, FC, LFE, RL, RR, SL, SR) 서라운드를 바이노럴 스테레오로 실시간 렌더링 | PipeWire 임펄스 응답 검증 (`inzone-tools diagnose-impulse`) |
-| **H9 II 하드웨어 보정 필터** | 지원 | H9 II (MDR-G900N / YY2987) 전용 7단 IIR Biquad 필터(`wh_g910n_standard.ba`)를 네이티브 double 정밀도로 연산 | 극점 안정성 및 손상 입력 검사 (`FilterTests.swift`) |
-| **내부 공간 ALC** | 지원 | 8프레임 블록, 32샘플(0.667ms) 룩어헤드 지연의 다이내믹 피크 리미터로 공간 음향 연산 후 피크 왜곡 억제 및 +1 dB 레벨 보정 | 블록 크기·In-place 출력 일치 검사 (`NativeDSPTests.swift`) |
-| **Sony 10밴드 EQ** | 지원 | 31.5Hz ~ 16kHz의 10개 주파수 대역을 -12dB ~ +12dB(1dB 단위)로 조절. 소니의 사전 계산된 Biquad 계수 테이블을 그대로 적용 | 계수 테이블 무결성 검증 (`AssetExportTests.swift`) |
-| **소니 공식 7대 프리셋** | 지원 | Flat, FPS 1, FPS 2, FPS 3, Immersion Flat(RPG), Bass Boost, Music/Video 프리셋 내장. Flat 외 적용 시 출력 ALC 자동 연동 | 프리셋 파라미터 및 변환 검증 (`PresetsTests.swift`) |
-| **ModeEqualizer (몰입 음장)** | 지원 | 소니 전용 몰입감 보정 Biquad 필터 구현 (Standard / Immersive 음장 모드 선택) | 네이티브 계수 우선순위 및 필터 그래프 검증 |
-| **출력 자동 음량 제어 (Output ALC)** | 지원 | -18dB 감쇠 → Threshold -18dB, Ratio 1000:1, Attack 1ms, Release 1s 피크 압축 → +18dB 복구 스테이지 구성 | PipeWire 및 LADSPA 기준 출력 비교 (`diagnose-sfx`) |
-| **동적 범위 제어 (DRC)** | 지원 | 끔(Off) / 낮음(Low) / 높음(High) 3단계 지원. 10ms 피크 감쇠 기반 상향 압축 및 확장 커브 구현 | 부동소수점 비트 단위 일치 검증 (`DSPGoldenTests.swift`) |
-| **마이크 자동 게인 제어 (Mic AGC)** | 지원 | 마이크 입력 음량을 자동으로 평탄화하는 소프트웨어 AGC | LADSPA 블록 처리 및 그래프 로드 검증 |
-| **고해상도 음원 재생** | 지원 | 음악 프로파일에서 PipeWire 리샘플러를 통해 처리 (헤드셋 하드웨어 최종 출력은 16-bit 48kHz 고정) | PipeWire 리샘플링 세션 동작 확인 |
+| **7.1ch Virtual Surround** | Supported | Real-time binaural rendering of 7.1ch (FL, FR, FC, LFE, RL, RR, SL, SR) input using Sony official 512-tap FIR HRTF filters | PipeWire impulse response diagnostics (`inzone-tools diagnose-impulse`) |
+| **H9 II Hardware Correction Filter** | Supported | 7-stage IIR Biquad filter (`wh_g910n_standard.ba`) dedicated to H9 II (MDR-G900N / YY2987), computed in native double precision | Pole stability and corrupted input tests (`FilterTests.swift`) |
+| **Internal Spatial ALC** | Supported | Dynamic peak limiter with 8-frame blocks and 32-sample (0.667 ms) lookahead latency; suppresses post-spatialization clipping with a +1.0 dB level compensation | Block size and in-place buffer consistency tests (`NativeDSPTests.swift`) |
+| **Sony 10-Band EQ** | Supported | 10 frequency bands from 31.5 Hz to 16 kHz with -12 dB to +12 dB range (1 dB steps), applying Sony precomputed Biquad coefficient tables directly | Coefficient table integrity checks (`AssetExportTests.swift`) |
+| **Sony Official 7 Presets** | Supported | Built-in Flat, FPS 1, FPS 2, FPS 3, Immersion Flat (RPG), Bass Boost, and Music/Video presets; automatically engages Output ALC for non-Flat presets | Preset parameter and transformation tests (`PresetsTests.swift`) |
+| **ModeEqualizer (Immersive Soundstage)** | Supported | Sony proprietary immersion compensation Biquad filter (Standard / Immersive soundfield modes) | Native coefficient precedence and filter graph tests |
+| **Output Auto Level Control (Output ALC)** | Supported | -18 dB attenuation stage followed by peak compression (Threshold -18 dB, Ratio 1000:1, Attack 1 ms, Release 1 s) and +18 dB recovery stage | PipeWire vs. direct LADSPA reference comparisons (`diagnose-sfx`) |
+| **Dynamic Range Control (DRC)** | Supported | 3 levels: Off / Low / High; upward compression and expansion curve based on 10 ms peak detection | Bit-level single-precision floating-point matching (`DSPGoldenTests.swift`) |
+| **Microphone Auto Gain Control (Mic AGC)** | Supported | Software AGC normalizing microphone input level | LADSPA block processing and graph loading tests |
+| **Hi-Res Audio Playback** | Supported | Processed via PipeWire resampler in music profile (hardware output fixed at 16-bit 48kHz) | PipeWire resampling session tests |
 
 ---
 
-## 2. 하드웨어 장치 제어 (USB HID Hardware Control)
+## 2. Hardware Device Control (USB HID)
 
-INZONE H9 II 무선 동글(VID `054C`, PID `0FA8`)의 인터페이스 5를 통해 소니 독자 HCI 패킷 프로토콜로 기기를 직접 제어합니다.
+Direct hardware control over the INZONE H9 II wireless transceiver (VID `054C`, PID `0FA8`) via USB Interface 5 using Sony proprietary HCI packet protocol.
 
-| 제어 항목 | CLI 식별자 | 지원 상태 | 제어 범위 및 설정값 | 동작 설명 |
+| Control Item | CLI Identifier | Status | Range & Values | Description |
 |---|---|:---:|---|---|
-| **소음 제어 (ANC)** | `anc` | 지원 | `0`: 끔, `1`: 노이즈 캔슬링(NC), `2`: 주변 소리 | 헤드셋 하드웨어 레지스터 즉시 반영 |
-| **주변 소리 크기** | `ambient_level` | 지원 | `1` ~ `20` (20단계) | 주변 소리 모드일 때 마이크 유입량 조절 |
-| **음성 집중 모드** | `voice_focus` | 지원 | `0`: 끔, `1`: 켬 | 주변 소리 모드 중 사람 목소리 대역만 통과 |
-| **사이드톤 (내 목소리 듣기)** | `sidetone` | 지원 | `0` ~ `10` (11단계) | 마이크 입력을 실시간으로 헤드폰에 모니터링 |
-| **Game / Chat 밸런스** | `game_chat` | 지원 | `0` ~ `100` (50: 정중앙) | Game 스트림과 Chat 스트림 간 하드웨어 음량 비율 |
-| **물리 버튼 순환 모드** | `toggle_*` | 지원 | `toggle_off`, `toggle_nc`, `toggle_ambient` (`0` 또는 `1`) | 헤드셋 본체 NC 버튼을 누를 때 순환할 모드 목록 |
-| **전원 켤 때 NC 기본값** | `nc_startup` | 지원 | `0`: 끔, `1`: NC, `2`: 주변 소리, `3`: 이전 상태 유지 | 전원 On 시 초기 소음 제어 상태 지정 |
-| **전원 켤 때 Bluetooth** | `bt_startup` | 지원 | `0`: 끔, `1`: 켬, `2`: 이전 상태 유지 | 전원 On 시 블루투스 모듈 활성화 여부 |
-| **자동 전원 끄기** | `auto_power` | 지원 | `0`, `5`, `15`, `30`, `60`, `180` (분 단위, `0`: 꺼짐) | 오디오 신호 없을 때 대기 전원 자동 차단 |
-| **음성 안내 언어** | `language` | 지원 | `0`: 영어, `1`: 일본어, `2`: 중국어 | 헤드셋 내장 음성 안내(Voice Prompt) 언어 |
-| **알림음 및 가이던스** | `guidance` | 지원 | `0`: 끔, `1`: 켬 | 조작 알림 비프음 및 음성 가이던스 활성화 |
-| **배터리 잔량 조회** | - | 지원 | `0%` ~ `100%` (충전 중 여부 포함) | 실시간 장치 상태 조회 (`--device-status`) |
-| **펌웨어 버전 확인** | - | 지원 | 헤드셋 및 동글 펌웨어 버전 문자열 | 실시간 장치 상태 조회 (`--device-status`) |
-| **마이크 루프백 테스트** | - | 지원 | 실시간 로컬 루프백 (최대 30초, 순수 메모리 큐) | TUI 단축키 `T`로 간편 청음 |
+| **Noise Control (ANC)** | `anc` | Supported | `0`: Off, `1`: Noise Canceling (NC), `2`: Ambient Sound | Directly updates headset hardware register |
+| **Ambient Sound Level** | `ambient_level` | Supported | `1` to `20` (20 steps) | Controls microphone passthrough level in Ambient mode |
+| **Voice Focus Mode** | `voice_focus` | Supported | `0`: Off, `1`: On | Passes human vocal frequencies while suppressing ambient noise |
+| **Sidetone (Mic Monitoring)** | `sidetone` | Supported | `0` to `10` (11 steps) | Real-time microphone monitoring in headphones |
+| **Game / Chat Balance** | `game_chat` | Supported | `0` to `100` (50: Center) | Hardware balance between Game and Chat audio streams |
+| **Physical Button Toggle Cycle** | `toggle_*` | Supported | `toggle_off`, `toggle_nc`, `toggle_ambient` (`0` or `1`) | Determines modes cycled when pressing headset NC button |
+| **Power-on NC Default** | `nc_startup` | Supported | `0`: Off, `1`: NC, `2`: Ambient, `3`: Retain Last State | Initial noise control mode upon powering on |
+| **Power-on Bluetooth** | `bt_startup` | Supported | `0`: Off, `1`: On, `2`: Retain Last State | Bluetooth module state upon powering on |
+| **Auto Power Off** | `auto_power` | Supported | `0`, `5`, `15`, `30`, `60`, `180` (minutes, `0`: Disabled) | Standby auto shutoff timer when no audio signal is present |
+| **Voice Guidance Language** | `language` | Supported | `0`: English, `1`: Japanese, `2`: Chinese | Built-in voice prompt language |
+| **Notification Tones & Guidance** | `guidance` | Supported | `0`: Off, `1`: On | Enables or disables operation beeps and voice guidance |
+| **Battery Status Query** | - | Supported | `0%` to `100%` (including charging state) | Live status readout (`--device-status`) |
+| **Firmware Version Query** | - | Supported | Headset and transceiver firmware version strings | Live status readout (`--device-status`) |
+| **Mic Loopback Test** | - | Supported | Real-time local loopback (up to 30 seconds, pure memory queue) | Easy auditioning via TUI key `T` |
 
 ---
 
-## 3. 프로파일 및 프로세스 자동화 (Profiles & Automation)
+## 3. Profiles & Automation
 
-| 기능 항목 | 지원 상태 | 세부 설명 |
+| Feature | Status | Description |
 |---|:---:|---|
-| **6대 기본 프로파일** | 지원 | `surround`(공간 음향), `fps`(발소리 강조), `music`(원음 지향), `voice`(통화 특화), `balanced`(기본 균형), `restore`(초기 복원) |
-| **프로파일별 독립 설정 저장** | 지원 | EQ, DRC, 출력 ALC, 마이크 AGC, 음장 모드, HRTF 선택이 각 프로파일별로 독립 저장 (`~/.config/inzone-h9-ii/`) |
-| **프로세스 감지 자동 전환** | 지원 | 1초 주기로 활성 프로세스를 모니터링하여 지정된 프로파일로 자동 전환 (Linux 네이티브 및 Wine/Proton Windows 실행 파일 `*.exe` 지원) |
-| **우선순위 및 디바운스(안정화)** | 지원 | 규칙별 우선순위 지정 지원. 일치 상태가 2초 이상 지속될 때만 전환하여 빈번한 오디오 끊김 방지 |
-| **스마트 원복 및 수동 우선** | 지원 | 등록된 게임 종료 시 직전 프로파일로 자동 복귀. 게임 중 사용자가 수동 변경한 경우 해당 프로파일 최우선 유지 |
-| **systemd 사용자 데몬** | 지원 | 백그라운드 상시 상주용 `inzone-profile-auto.service` 유닛 제공 (`inzone-profile --auto-enable`) |
+| **6 Base Profiles** | Supported | `surround` (spatial audio), `fps` (footstep boost), `music` (reference sound), `voice` (vocal clarity), `balanced` (flat default), `restore` (baseline revert) |
+| **Independent Profile Settings** | Supported | EQ, DRC, Output ALC, Mic AGC, Sound Mode, and HRTF selections persist independently per profile (`~/.config/inzone-h9-ii/`) |
+| **Process Detection Auto-Switching** | Supported | Monitors active processes on a 1-second interval to switch profiles (supports native Linux and Wine/Proton Windows `*.exe` executables) |
+| **Priority & Debounce** | Supported | Configurable per-rule priorities; enforces a 2-second continuous state match before switching to avoid audio stuttering |
+| **Smart Restoration & Manual Priority** | Supported | Restores prior profile when target process exits; preserves manual user profile changes during active sessions |
+| **systemd User Daemon** | Supported | Background resident service unit provided via `inzone-profile-auto.service` (`inzone-profile --auto-enable`) |
 
 ---
 
-## 4. 데이터 상호 운용성 (Interoperability)
+## 4. Data Interoperability
 
-| 기능 항목 | 지원 상태 | 세부 설명 |
+| Feature | Status | Description |
 |---|:---:|---|
-| **Windows 프로파일 가져오기/내보내기** | 지원 | Windows INZONE Hub의 `SoundProfile.json` 파일을 직접 읽고 쓰기 지원 (enum 변환, 주석 처리, 양방향 무손실 변환) |
-| **개인화 HRTF (`.hki`) 가져오기** | 지원 | 모바일 앱에서 생성된 사용자 맞춤형 Cipher 7 암호화 HKI 파일 복호화 및 유효성 검증(방위각, 탭 수, 극각, FFT 정규화) |
-| **개인 보정 필터 (`YY2987.ba`) 가져오기** | 지원 | H9 II 개인 맞춤 보정 필터의 52바이트 헤더 래퍼 파싱, 체크섬 검증, 7단 Biquad 안정성 확인 후 안전 적용 |
-| **안전 백업 및 자동 롤백** | 지원 | 설정 변경이나 프로파일 전환 도중 실패 시 직전 WirePlumber 설정 및 오디오 싱크 상태를 즉시 복원 |
+| **Windows Profile Import/Export** | Supported | Read and write Windows INZONE Hub `SoundProfile.json` directly (lossless bidirectional conversion, enum mapping, and JSON comment handling) |
+| **Personalized HRTF (`.hki`) Import** | Supported | Decrypts and validates mobile app Cipher 7-encrypted HKI files (azimuth, tap count, polar angle, and FFT normalization checks) |
+| **Personal Correction Filter (`YY2987.ba`) Import** | Supported | Parses 52-byte header wrapper, verifies checksum, validates 7-stage Biquad stability, and installs safely |
+| **Safe Backup & Automatic Rollback** | Supported | Reverts to prior WirePlumber configuration and audio sink bindings immediately upon profile switch failure |
 
 ---
 
-## 5. UI 및 개발 도구 (TUI & Tooling)
+## 5. UI & Tooling
 
-| 도구 항목 | 구현 형태 | 주요 기능 및 용도 |
+| Tool | Implementation | Purpose & Capabilities |
 |---|---|---|
-| **터미널 UI (TUI)** | SwiftTUI 기반 인터페이스 | 방향키 기반 프로파일 전환, 10밴드 EQ 편집, 하드웨어 제어 모달, 개인화 파일 임포트, 마이크 청음 테스트 |
-| **CLI 제어기** | `inzone-profile` | 스크립트, 데스크톱 단축키, 창 관리자 바인딩을 위한 완전한 커맨드라인 인터페이스 |
-| **에셋 추출 도구** | `inzone-tools fetch / assets` | 소니 공식 설치 파일 무결성 검증, MSI/CAB 정적 추출, ILSpy 연동 역어셈블 및 오디오 계수 생성 |
-| **진단 및 검증 도구** | `inzone-tools diagnose-*` | PipeWire 임펄스 응답 측정, LADSPA 수치 정합성 분석, 세션 라우팅 진단 |
+| **Terminal UI (TUI)** | SwiftTUI Interface | Arrow-key profile switching, 10-band EQ editor, hardware control dialog, personalization import, and mic loopback test |
+| **CLI Controller** | `inzone-profile` | Complete command-line interface for shell scripting, hotkeys, and window manager integration |
+| **Asset Extraction Tool** | `inzone-tools fetch / assets` | Installer SHA-256 verification, MSI/CAB static extraction, ILSpy decompilation, and audio coefficient generation |
+| **Diagnostics & Verification** | `inzone-tools diagnose-*` | PipeWire impulse response measurements, LADSPA numerical accuracy verification, and session routing diagnostics |
 
 ---
 
-## 6. 지원 범위 및 미지원 항목 (Scope & Rationale)
+## 6. Scope & Non-Goals
 
-| 항목 | 지원 여부 | 사유 및 대안 |
+| Item | Status | Rationale & Alternatives |
 |---|:---:|---|
-| **스마트폰 귀 사진 클라우드 분석** | 미지원 | 소니 공식 서버 통신 및 계정 로그인이 필요한 영역입니다. 개인정보 보호와 오프라인 독립 실행을 위해 서버 통신은 구현하지 않으며, 모바일 앱/Windows에서 생성된 `personalized_hrtf.hki` 및 `YY2987.ba` 파일을 로컬에서 가져와 사용하는 방식을 지원합니다. |
-| **OTA 펌웨어 플래싱** | 미지원 (버전 조회만 지원) | 무선 USB 통신 상에서 역분석된 프로토콜을 이용한 펌웨어 플래싱은 기기 벽돌(Brick) 위험이 매우 큽니다. 하드웨어 보호를 위해 버전 조회만 제공하며, 펌웨어 업데이트는 Windows 공식 INZONE Hub 사용을 권장합니다. |
+| **Smartphone Ear Photo Cloud Analysis** | Out of Scope | Requires communication with proprietary Sony cloud servers and account authentication. To safeguard user privacy and maintain offline operation, cloud communication is omitted. Users can generate `personalized_hrtf.hki` and `YY2987.ba` files via the mobile app/Windows Hub and import them locally. |
+| **Over-the-Air (OTA) Firmware Flashing** | Out of Scope (Version query supported) | Flashing firmware over reverse-engineered wireless USB protocols carries severe device bricking risks. For hardware safety, only firmware version inspection is provided. Firmware updates should be performed via the official Windows INZONE Hub utility. |

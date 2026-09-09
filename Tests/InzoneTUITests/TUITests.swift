@@ -14,7 +14,7 @@ struct TerminalTests {
 
     @Test func initialScreenRendersWithoutDeviceAccess() {
         let screen = InzoneTerminal.preview()
-        for label in ["INZONE H9 II", "FPS", "음악", "통화", "서라운드", "D: DRC", "E: EQ", "H: 장치", "U: 자동", "Q / Esc"] {
+        for label in ["INZONE H9 II", "FPS", "Music", "Voice", "Surround", "D: DRC", "E: EQ", "H: Device", "U: Automation", "Q / Esc"] {
             #expect(screen.contains(label))
         }
         #expect(screen.split(separator: "\n", omittingEmptySubsequences: false).count == 24)
@@ -22,13 +22,13 @@ struct TerminalTests {
 
     @Test func narrowScreenPreservesExitInstruction() {
         let screen = InzoneTerminal.preview(columns: 60, rows: 18)
-        #expect(screen.contains("72열 × 24행"))
-        #expect(screen.contains("Q / Esc: 종료"))
+        #expect(screen.contains("72 columns × 24 rows"))
+        #expect(screen.contains("Q / Esc: Quit"))
     }
 
     @Test func terminalControlCharactersAreSanitized() {
-        #expect(terminalText("안녕\u{1b}[2J\n\u{009b}\u{202e}abc") == "안녕 [2J   abc")
-        #expect(terminalText("e\u{301} 한글") == "e\u{301} 한글")
+        #expect(terminalText("\u{C548}\u{B155}\u{1b}[2J\n\u{009b}\u{202e}abc") == "\u{C548}\u{B155} [2J   abc")
+        #expect(terminalText("e\u{301} \u{D55C}\u{AE00}") == "e\u{301} \u{D55C}\u{AE00}")
     }
 
     @Test func profileSelectionWrapsAndAcceptsUppercaseShortcuts() {
@@ -68,7 +68,7 @@ struct TerminalTests {
         press(model, "6")
         press(model, "D")
         #expect(model.screen == .profiles)
-        #expect(model.message.contains("프로파일"))
+        #expect(model.message.contains("profile"))
         press(model, "I")
         #expect(model.screen == .prompt)
         var terminated = false
@@ -91,7 +91,7 @@ struct TerminalTests {
         model.promptText = "restore"
         model.submitPrompt()
         #expect(model.screen == .prompt)
-        #expect(model.message.contains("대상"))
+        #expect(model.message.contains("target"))
         model.promptText = "fps"
         model.submitPrompt()
         model.promptText = "1001"
@@ -108,7 +108,7 @@ struct TerminalTests {
         model.busy = true
         model.requestTermination { terminated = true }
         #expect(!terminated)
-        #expect(model.message.contains("작업을 마친 후"))
+        #expect(model.message.contains("after completing the current task"))
         model.busy = false
         model.requestTermination { terminated = true }
         #expect(terminated)

@@ -273,7 +273,7 @@ final class CommandLineTests: XCTestCase {
 
     func testWindowsListEscapesTerminalControlsWithoutChangingProfileName() throws {
         try withFixture { fixture in
-            let name = "윈도우-\u{0001}\u{001B}\u{007F}\u{0085}\u{202E}\u{2028}\u{2029}\u{E0001}-프로필"
+            let name = "\u{C708}\u{B3C4}\u{C6B0}-\u{0001}\u{001B}\u{007F}\u{0085}\u{202E}\u{2028}\u{2029}\u{E0001}-\u{D504}\u{B85C}\u{D544}"
             let source = fixture.directory.appendingPathComponent("windows-terminal-controls.json")
             let input: [[String: Any]] = [["ProfileName": name, "EQPreset": "CUSTOM"]]
             try Data(JSONSupport.encode(input).utf8).write(to: source)
@@ -336,18 +336,18 @@ final class CommandLineTests: XCTestCase {
             let cases: [(field: String, json: String)] = [
                 (
                     "EQPreset",
-                    #"[{"EQPreset":"정상 Unicode\n\u001B[31m\u0007\u007F\u0085\u202E\u2028\u2029끝"}]"#
+                    #"[{"EQPreset":"\#u{C815}\#u{C0C1} Unicode\n\u001B[31m\u0007\u007F\u0085\u202E\u2028\u2029\#u{B05D}"}]"#
                 ),
                 (
                     "EQAxis",
-                    #"[{"EQPreset":"CUSTOM","EQAxis":"정상 Unicode\n\u001B[31m\u0007\u007F\u0085\u202E\u2028\u2029끝"}]"#
+                    #"[{"EQPreset":"CUSTOM","EQAxis":"\#u{C815}\#u{C0C1} Unicode\n\u001B[31m\u0007\u007F\u0085\u202E\u2028\u2029\#u{B05D}"}]"#
                 ),
                 (
                     "DynamicRangeCompression",
-                    #"[{"EQPreset":"CUSTOM","DynamicRangeCompression":"정상 Unicode\n\u001B[31m\u0007\u007F\u0085\u202E\u2028\u2029끝"}]"#
+                    #"[{"EQPreset":"CUSTOM","DynamicRangeCompression":"\#u{C815}\#u{C0C1} Unicode\n\u001B[31m\u0007\u007F\u0085\u202E\u2028\u2029\#u{B05D}"}]"#
                 ),
             ]
-            let expected = #"Unknown Windows setting value: 정상 Unicode\u{000A}\u{001B}[31m\u{0007}\u{007F}\u{0085}\u{202E}\u{2028}\u{2029}끝"# + "\n"
+            let expected = #"Unknown Windows setting value: \#u{C815}\#u{C0C1} Unicode\u{000A}\u{001B}[31m\u{0007}\u{007F}\u{0085}\u{202E}\u{2028}\u{2029}\#u{B05D}"# + "\n"
 
             for item in cases {
                 try Data(item.json.utf8).write(to: source)

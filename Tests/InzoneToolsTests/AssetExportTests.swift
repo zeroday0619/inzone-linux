@@ -51,7 +51,7 @@ final class AssetExportTests: XCTestCase {
             let gains = fields.map { "EQGain_\($0) = \(index - 3);" }.joined(separator: "\n")
             return "case EQ_PRESET.\(name):\n" + gains + "\nbreak;"
         }.joined(separator: "\n")
-        return "// Unicode context verifies UTF-16 regular expression ranges: 소니.\ncase EQ_PRESET.FLAT:\nEQGain_31_5Hz = 99;\nbreak;\n" + complete
+        return "// Unicode context verifies UTF-16 regular expression ranges: \u{C18C}\u{B2C8}.\ncase EQ_PRESET.FLAT:\nEQGain_31_5Hz = 99;\nbreak;\n" + complete
     }
 
     private func controlSource() -> String {
@@ -194,11 +194,11 @@ final class AssetExportTests: XCTestCase {
     func testDisassemblyEscapesTerminalControlsAndPreservesUnicode() throws {
         try withSources { payload, _, _ in
             let input = payload.appendingPathComponent("virtualizer-controls.asm")
-            let instruction = "mov    한글,e\u{301}\u{0000}\u{0007}\u{001B}[2J\u{007F}\u{0085}\u{202E}\u{2028}\u{2029}"
+            let instruction = "mov    \u{D55C}\u{AE00},e\u{301}\u{0000}\u{0007}\u{001B}[2J\u{007F}\u{0085}\u{202E}\u{2028}\u{2029}"
             try Data(("   180001000:\t90\t" + instruction + "\n").utf8).write(to: input)
 
             let output = try AssetExport.disassemble(input: input, start: 0x1000, end: 0x1001)
-            let expected = "180001000 mov    한글,e\u{301}" + #"\u{0000}\u{0007}\u{001B}[2J\u{007F}\u{0085}\u{202E}\u{2028}\u{2029}"# + "\n"
+            let expected = "180001000 mov    \u{D55C}\u{AE00},e\u{301}" + #"\u{0000}\u{0007}\u{001B}[2J\u{007F}\u{0085}\u{202E}\u{2028}\u{2029}"# + "\n"
             XCTAssertEqual(output, expected)
             XCTAssertEqual(output.unicodeScalars.last?.value, 0x0A)
             XCTAssertEqual(output.unicodeScalars.filter { $0.value == 0x0A }.count, 1)

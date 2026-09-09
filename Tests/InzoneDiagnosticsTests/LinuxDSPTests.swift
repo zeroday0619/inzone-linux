@@ -134,7 +134,7 @@ final class LinuxDSPTests: XCTestCase {
         let analysis = directory.appendingPathComponent("analysis")
         let sentinel = directory.appendingPathComponent("properties-sentinel")
         let output = analysis.appendingPathComponent("pipewire-sfx-11-props.txt")
-        let properties = "Props: 출력\ncontrol = 0"
+        let properties = "Props: \u{CD9C}\u{B825}\ncontrol = 0"
         try FileManager.default.createDirectory(at: analysis, withIntermediateDirectories: true)
         try Data("properties sentinel".utf8).write(to: sentinel)
         try FileManager.default.createSymbolicLink(at: output, withDestinationURL: sentinel)

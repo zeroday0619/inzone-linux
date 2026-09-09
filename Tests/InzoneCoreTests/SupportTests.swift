@@ -115,14 +115,14 @@ final class SupportTests: XCTestCase {
     }
 
     func testTerminalOutputEscapesControlsAndPreservesOptionalNewlines() {
-        let value = "정상\u{001B}\u{007F}\u{0085}\u{202E}\u{2028}\u{2029}\n끝"
+        let value = "\u{C815}\u{C0C1}\u{001B}\u{007F}\u{0085}\u{202E}\u{2028}\u{2029}\n\u{B05D}"
         XCTAssertEqual(
             TerminalOutput.escaped(value),
-            "정상\\u{001B}\\u{007F}\\u{0085}\\u{202E}\\u{2028}\\u{2029}\\u{000A}끝"
+            "\u{C815}\u{C0C1}\\u{001B}\\u{007F}\\u{0085}\\u{202E}\\u{2028}\\u{2029}\\u{000A}\u{B05D}"
         )
         XCTAssertEqual(
             TerminalOutput.escaped(value, preservingNewlines: true),
-            "정상\\u{001B}\\u{007F}\\u{0085}\\u{202E}\\u{2028}\\u{2029}\n끝"
+            "\u{C815}\u{C0C1}\\u{001B}\\u{007F}\\u{0085}\\u{202E}\\u{2028}\\u{2029}\n\u{B05D}"
         )
     }
 }
