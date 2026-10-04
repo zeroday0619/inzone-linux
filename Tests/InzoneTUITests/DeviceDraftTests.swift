@@ -162,6 +162,37 @@ struct DeviceDraftTests {
         #expect(model.pendingDeviceApplicationOrder.last == "toggle_off")
     }
 
+    @Test func ambientChangesRequireAmbientModeAndApplyAfterIt() throws {
+        let model = model()
+        let modeIndex = try #require(InzoneDevice.fields.firstIndex { $0.name == "anc" })
+        let levelIndex = try #require(InzoneDevice.fields.firstIndex { $0.name == "ambient_level" })
+        let focusIndex = try #require(InzoneDevice.fields.firstIndex { $0.name == "voice_focus" })
+
+        model.adjustDeviceValue(at: levelIndex, direction: 1)
+        model.adjustDeviceValue(at: focusIndex, direction: 1)
+        model.applyDeviceChanges()
+        #expect(model.message == "Select Ambient Sound mode before changing Ambient level or Voice focus.")
+        #expect(model.pendingDeviceCount == 2)
+
+        model.adjustDeviceValue(at: modeIndex, direction: 1)
+        model.adjustDeviceValue(at: modeIndex, direction: 1)
+        #expect(model.pendingDeviceApplicationOrder.first == "anc")
+        #expect(Set(model.pendingDeviceApplicationOrder.dropFirst()) == ["ambient_level", "voice_focus"])
+    }
+
+    @Test func ambientChangesApplyBeforeLeavingAmbientMode() throws {
+        var fields = Dictionary(uniqueKeysWithValues: InzoneDevice.fields.map { ($0.name, $0.values[0]) })
+        fields["anc"] = 2
+        let model = TerminalModel(previewDeviceSnapshot: ["connected": true, "fields": fields])
+        let modeIndex = try #require(InzoneDevice.fields.firstIndex { $0.name == "anc" })
+        let levelIndex = try #require(InzoneDevice.fields.firstIndex { $0.name == "ambient_level" })
+
+        model.adjustDeviceValue(at: modeIndex, direction: -1)
+        model.adjustDeviceValue(at: levelIndex, direction: 1)
+        #expect(model.pendingDeviceApplicationOrder.first == "ambient_level")
+        #expect(model.pendingDeviceApplicationOrder.last == "anc")
+    }
+
     @Test func everyDeviceSettingRemainsReachableAcrossSections() {
         let model = model()
         let keys = InzoneDevice.fields.map(\.name) + ["game_volume", "chat_volume", "mic_volume", "mic_mute"]

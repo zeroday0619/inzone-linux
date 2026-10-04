@@ -960,20 +960,33 @@ final class InstallationTests: XCTestCase {
             }
             let mappings = [
                 "52-inzone-game-chat.conf": fixture.home.appendingPathComponent(".config/wireplumber/wireplumber.conf.d/52-inzone-game-chat.conf"),
+                "filter-chain.conf": InzonePaths(home: fixture.home).filterChainConfiguration,
                 "systemd/inzone-profile-auto.service": fixture.home.appendingPathComponent(".config/systemd/user/inzone-profile-auto.service"),
+                "systemd/inzone-filter-chain.service": fixture.home.appendingPathComponent(".config/systemd/user/inzone-filter-chain.service"),
                 "udev/70-inzone-h9-ii.rules": systemRule,
             ]
             for (source, destination) in mappings {
                 XCTAssertEqual(try Data(contentsOf: destination), try Data(contentsOf: root.appendingPathComponent("configs/\(source)")))
             }
+            let filterEnableLink = fixture.home.appendingPathComponent(
+                ".config/systemd/user/default.target.wants/inzone-filter-chain.service"
+            )
+            XCTAssertEqual(
+                try FileManager.default.destinationOfSymbolicLink(atPath: filterEnableLink.path),
+                "../inzone-filter-chain.service"
+            )
+            XCTAssertEqual(
+                try Data(contentsOf: filterEnableLink),
+                try Data(contentsOf: root.appendingPathComponent("configs/systemd/inzone-filter-chain.service"))
+            )
             let active = try profileConfiguration(fixture.home.appendingPathComponent(
                 ".config/wireplumber/wireplumber.conf.d/51-inzone-h9-ii.conf"
             ))
             XCTAssertEqual(active.header, "# INZONE profile: balanced")
             XCTAssertNil(active.config["context.modules"])
-            let activeDSP = try profileConfiguration(fixture.home.appendingPathComponent(
-                ".config/pipewire/pipewire.conf.d/51-inzone-h9-ii-dsp.conf"
-            ))
+            let paths = InzonePaths(home: fixture.home)
+            let activeDSP = try profileConfiguration(paths.activeDSPProfile)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: paths.legacyDSPProfile.path))
             let activeGraph = try softwareDSPGraph(activeDSP.config)
             let activeNodes = try XCTUnwrap((activeGraph["filter.graph"] as? [String: Any])?["nodes"] as? [[String: Any]])
             XCTAssertTrue(activeNodes.contains { $0["label"] as? String == "inzone_fir_downmix" })
@@ -1006,6 +1019,88 @@ final class InstallationTests: XCTestCase {
             let homeOwner = try FileManager.default.attributesOfItem(atPath: fixture.home.path)[.ownerAccountID] as? NSNumber
             let executableOwner = attributes[.ownerAccountID] as? NSNumber
             XCTAssertEqual(executableOwner, homeOwner)
+        }
+    }
+
+    func testLegacyDaemonDSPFragmentMigratesToDedicatedFilterClient() throws {
+        try requireAssets()
+        try fixture { fixture in
+            try installFixtureExecutable(fixture)
+            let paths = InzonePaths(home: fixture.home)
+            let legacy = "{\"context.modules\":[{\"name\":\"libpipewire-module-filter-chain\"}]}\n"
+            try write(legacy, to: paths.legacyDSPProfile)
+            let settings = paths.configDirectory.appendingPathComponent("profile-settings.json")
+            let savedSettings = "{\"music\":{\"drc\":1}}\n"
+            try write(savedSettings, to: settings)
+
+            try installUser(fixture)
+
+            XCTAssertEqual(try String(contentsOf: paths.legacyDSPProfile, encoding: .utf8), "{}\n")
+            XCTAssertEqual(try String(contentsOf: settings, encoding: .utf8), savedSettings)
+            let activeDSP = try profileConfiguration(paths.activeDSPProfile)
+            XCTAssertNotNil(try softwareDSPGraph(activeDSP.config)["filter.graph"])
+            let backups = try FileManager.default.contentsOfDirectory(
+                at: fixture.home.appendingPathComponent(".local/state/inzone-linux/backups"),
+                includingPropertiesForKeys: nil
+            )
+            XCTAssertEqual(backups.count, 1)
+            XCTAssertEqual(
+                try String(contentsOf: backups[0].appendingPathComponent(
+                    ".config/pipewire/pipewire.conf.d/51-inzone-h9-ii-dsp.conf"
+                ), encoding: .utf8),
+                legacy
+            )
+        }
+    }
+
+    func testFailedLegacyMigrationRestoresDaemonFragment() throws {
+        try requireAssets()
+        try fixture { fixture in
+            try installFixtureExecutable(fixture)
+            let paths = InzonePaths(home: fixture.home)
+            let legacy = "{\"context.modules\":[{\"name\":\"libpipewire-module-filter-chain\"}]}\n"
+            try write(legacy, to: paths.legacyDSPProfile)
+            let mpv = fixture.home.appendingPathComponent(".config/mpv/mpv.conf")
+            try FileManager.default.createDirectory(at: mpv.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data([0xff]).write(to: mpv)
+
+            XCTAssertThrowsError(try installUser(fixture))
+
+            XCTAssertEqual(try String(contentsOf: paths.legacyDSPProfile, encoding: .utf8), legacy)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: paths.activeDSPProfile.path))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: paths.filterChainConfiguration.path))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.home.appendingPathComponent(
+                ".config/systemd/user/inzone-filter-chain.service"
+            ).path))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.home.appendingPathComponent(
+                ".config/systemd/user/default.target.wants/inzone-filter-chain.service"
+            ).path))
+        }
+    }
+
+    func testConflictingFilterServiceEnableLinkStopsInstallation() throws {
+        try requireAssets()
+        try fixture { fixture in
+            try installFixtureExecutable(fixture)
+            let link = fixture.home.appendingPathComponent(
+                ".config/systemd/user/default.target.wants/inzone-filter-chain.service"
+            )
+            try FileManager.default.createDirectory(at: link.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try FileManager.default.createSymbolicLink(
+                atPath: link.path, withDestinationPath: "../unrelated.service"
+            )
+
+            XCTAssertThrowsError(try installUser(fixture)) { error in
+                XCTAssertTrue(error.localizedDescription.contains("targets another unit"), error.localizedDescription)
+            }
+
+            XCTAssertEqual(
+                try FileManager.default.destinationOfSymbolicLink(atPath: link.path),
+                "../unrelated.service"
+            )
+            XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.home.appendingPathComponent(
+                ".config/systemd/user/inzone-filter-chain.service"
+            ).path))
         }
     }
 
@@ -1077,7 +1172,21 @@ final class InstallationTests: XCTestCase {
             for name in ["fps", "music", "voice", "balanced"] {
                 try write("old \(name) profile\n", to: data.appendingPathComponent("\(name).conf"))
             }
+            let filterUnit = fixture.home.appendingPathComponent(
+                ".config/systemd/user/inzone-filter-chain.service"
+            )
+            let filterEnableLink = fixture.home.appendingPathComponent(
+                ".config/systemd/user/default.target.wants/inzone-filter-chain.service"
+            )
+            try FileManager.default.removeItem(at: filterEnableLink)
+            try FileManager.default.createSymbolicLink(
+                atPath: filterEnableLink.path, withDestinationPath: filterUnit.path
+            )
             try install(fixture)
+            XCTAssertEqual(
+                try FileManager.default.destinationOfSymbolicLink(atPath: filterEnableLink.path),
+                filterUnit.path
+            )
             for (path, contents) in preserved {
                 XCTAssertEqual(try String(contentsOf: fixture.home.appendingPathComponent(path), encoding: .utf8), contents)
             }

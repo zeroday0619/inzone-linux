@@ -602,6 +602,9 @@ public final class InzoneDevice: @unchecked Sendable {
         }
         var payload = Array(try transact(field.eventName))
         if payload[field.index] == value { return }
+        if ["ambient_level", "voice_focus"].contains(field.name), payload[0] != 2 {
+            throw InzoneError.message("Select Ambient Sound mode before changing \(field.name).")
+        }
         payload[field.index] = UInt8(value)
         if field.eventName == "nc_toggle", payload.prefix(3).reduce(0, { $0 + Int($1) }) < 2 {
             throw InzoneError.message("The noise-control button must include at least two modes.")

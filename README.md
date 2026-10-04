@@ -79,6 +79,12 @@ Run installation in a foreground terminal. During administrator authentication,
 the installer hands terminal control to `sudo`, which reads the password directly.
 Password characters are not echoed. Terminal ownership and input settings are
 restored when the command finishes, fails, is interrupted, or times out.
+Upgrading from the former PipeWire daemon DSP configuration restarts the desktop
+audio services once to unload the old filter modules. Later profile changes restart
+WirePlumber and the dedicated INZONE filter service.
+During a profile change, active application playback streams on INZONE outputs move
+through a temporary null sink and return to the selected output. This keeps PulseAudio
+compatible applications connected when the previous virtual sink disappears.
 
 ### 3. Reconnect Device & Activate
 Unplug and replug the USB dongle to apply the new udev permissions, then activate the surround sound profile:
@@ -213,7 +219,7 @@ Selection and setting changes are blocked while an operation is in progress.
 | Shortcut | Action | Description |
 |:---:|:---|:---|
 | **↑ / ↓** | Move cursor | Browse built-in and custom profiles; long lists follow the selection |
-| **Enter** | Apply profile | Immediately commit selected profile and DSP graph to WirePlumber |
+| **Enter** | Apply profile | Immediately commit the selected profile and restart its dedicated DSP filter service |
 | **G** | Manage profiles | Create, duplicate, rename, delete, import, replace, or export sound profiles |
 | **H** | Device controls | Open noise, sound, microphone, and system settings |
 | **E** | Edit 10-band EQ | Adjust bands from 31.5 Hz to 16 kHz (-12 to +12 dB) |
@@ -362,8 +368,9 @@ biquad recoveries, and missing-port runs when they are released. Command output 
 escaped and limited to 4 KiB per record. The file is created with mode `0600` because
 diagnostics can include local paths and audio graph properties. Logging remains outside
 the real-time LADSPA callback; it does not add file I/O or locking to DSP processing.
-When debug mode restarts PipeWire, DSP instance and cleanup summaries are also written
-to the service journal and can be inspected with `journalctl --user -u pipewire.service -r`.
+When debug mode restarts the INZONE filter service, DSP instance and cleanup summaries
+are also written to its journal and can be inspected with
+`journalctl --user -u inzone-filter-chain.service -r`.
 
 ---
 

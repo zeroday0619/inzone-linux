@@ -388,8 +388,8 @@ final class DeviceTests: XCTestCase {
 
     func testEveryDeviceFieldUsesItsExactPayloadOffsetAndPreservesOtherBytes() throws {
         let cases: [(name: String, event: UInt8, initial: [UInt8], expected: [UInt8], value: Int)] = [
-            ("ambient_level", 65, [0, 20, 255, 0], [0, 10, 255, 0], 10),
-            ("voice_focus", 65, [0, 20, 255, 0], [0, 20, 255, 1], 1),
+            ("ambient_level", 65, [2, 20, 255, 0], [2, 10, 255, 0], 10),
+            ("voice_focus", 65, [2, 20, 255, 0], [2, 20, 255, 1], 1),
             ("game_chat", 34, [50], [70], 70),
             ("sidetone", 35, [4, 255], [8, 255], 8),
             ("toggle_off", 66, [0, 1, 1], [1, 1, 1], 1),
@@ -431,6 +431,22 @@ final class DeviceTests: XCTestCase {
             XCTAssertLessThanOrEqual(Glibc.recv(descriptor, &unexpected, unexpected.count, Int32(MSG_DONTWAIT)), 0)
         }) { device in
             XCTAssertThrowsError(try device.setField("toggle_off", value: 0))
+        }
+    }
+
+    func testAmbientControlsRequireAmbientModeBeforeWriting() throws {
+        for field in ["ambient_level", "voice_focus"] {
+            try withMockDevice(server: { descriptor in
+                guard let read = Self.receive(descriptor) else { return }
+                Self.send(descriptor, bytes: Self.response(read, payload: [0, 20, 255, 0]))
+                usleep(50_000)
+                var unexpected = [UInt8](repeating: 0, count: 64)
+                XCTAssertLessThanOrEqual(
+                    Glibc.recv(descriptor, &unexpected, unexpected.count, Int32(MSG_DONTWAIT)), 0
+                )
+            }) { device in
+                XCTAssertThrowsError(try device.setField(field, value: field == "ambient_level" ? 10 : 1))
+            }
         }
     }
 

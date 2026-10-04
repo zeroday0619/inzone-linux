@@ -162,7 +162,7 @@ struct TerminalTests {
         model.selectRow(1)
         model.showsProfileControls = true
         let rendered = touchScreen(model)
-        for label in ["Dynamic range", "Output leveling", "Microphone gain", "Equalizer", "Presets", "Device & apps", "Back"] {
+        for label in ["Dynamic range", "Output leveling", "Microphone auto gain", "Equalizer", "Presets", "Device & apps", "Back"] {
             #expect(rendered.contains(label))
         }
         #expect(rendered.contains("Changes apply immediately to Music."))

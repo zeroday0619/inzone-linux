@@ -24,6 +24,12 @@ public struct InzonePaths: Sendable {
         home.appendingPathComponent(".config/wireplumber/wireplumber.conf.d/51-inzone-h9-ii.conf")
     }
     public var activeDSPProfile: URL {
+        configDirectory.appendingPathComponent("filter-chain.conf.d/51-inzone-h9-ii-dsp.conf")
+    }
+    public var filterChainConfiguration: URL {
+        configDirectory.appendingPathComponent("filter-chain.conf")
+    }
+    public var legacyDSPProfile: URL {
         home.appendingPathComponent(".config/pipewire/pipewire.conf.d/51-inzone-h9-ii-dsp.conf")
     }
     public var shareDirectory: URL { home.appendingPathComponent(".local/share/inzone-linux") }

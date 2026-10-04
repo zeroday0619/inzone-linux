@@ -54,7 +54,7 @@ struct TerminalProfileDetails: View {
                 .padding(.bottom, 2)
             detail("Dynamic range", value: ["Off", "Low", "High"][min(2, max(0, drc))])
             detail("Output leveling", value: outputALC ? "On" : "Off")
-            detail("Microphone gain", value: microphoneAGC ? "On" : "Off")
+            detail("Microphone auto gain", value: microphoneAGC ? "On" : "Off")
             Spacer(minLength: 0)
         }
     }

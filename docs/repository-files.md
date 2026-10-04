@@ -24,7 +24,7 @@ uses them only through a local static-analysis pipeline:
 |---|---|---|
 | **Build & Packaging** | • Top-level `Makefile`<br>• `native/Makefile`, `native/exports.map`<br>• `Package.swift`, `Package.resolved` | • Swift build caches (`.build/`, `.swiftpm/`)<br>• Compilation temporaries (`*.o`, `*.tmp`)<br>• External download caches |
 | **Source Code** | • `Sources/` (CLI, TUI, daemon, HID control, parsers)<br>• `Sources/InzoneDSP/` (LADSPA DSP implementation)<br>• `Sources/CLADSPA/` (C ABI system module headers) | • Built executables (`inzone-profile`, `inzone-tools`)<br>• Compiled DSP library (`native/inzone_dsp.so`) |
-| **System Configuration** | • `configs/` (WirePlumber 51/52 config templates)<br>• `configs/systemd/` (User service units)<br>• `configs/udev/` (`70-inzone-h9-ii.rules`) | • User runtime configurations (`~/.config/inzone-h9-ii/`)<br>• Active WirePlumber session state files |
+| **System Configuration** | • `configs/` (WirePlumber templates and dedicated PipeWire filter-chain base configuration)<br>• `configs/systemd/` (User service units)<br>• `configs/udev/` (`70-inzone-h9-ii.rules`) | • User runtime configurations (`~/.config/inzone-h9-ii/`)<br>• Active WirePlumber session state files |
 | **Development Tools** | • `Sources/InzoneTools/` (Developer/asset CLI)<br>• `Sources/InzoneToolsCore/` (Extraction/install/diagnostic core) | • Local ILSpy decompiler (`tools/ilspycmd`)<br>• `.dotnet/`, `.nuget/`, `tools/.store/` |
 | **Analysis Data** | • `docs/` (Technical specifications and architecture docs)<br>• `evidence/installer.json` (Official URLs and SHA-256)<br>• `analysis/README.md` | • `downloads/` (Official installer EXE/MSI)<br>• `analysis/payload/` (Pinned, publishable feature payloads; updater bytes excluded)<br>• `analysis/decompiled/` (Selected decompiled C# sources)<br>• `analysis/reverse-engineering-inventory.json` (catalog metadata, including updater hashes)<br>• Raw dumps (`*.asm`, `*.ole`, `*.strings-*.txt`) |
 | **Audio Assets** | None (Statically extracted locally) | • `assets/` (`sony-eq-tables.json`, HRTF/BA files, etc.) |
@@ -73,7 +73,19 @@ steps from the fixed system-path writes that require root:
 1. **Principle of Least Privilege**: Running `sudo make` is unnecessary and discouraged. Nearly all files (binaries, configurations, profiles) are atomically deployed under regular user permissions (`~/.local/bin`, `~/.config`).
 2. **Bound System-file Snapshots (memfd sealing)**: For system files requiring root access (udev rules and LADSPA plugins), the process copies contents into Linux sealed anonymous memory file descriptors (`memfd`), verifies SHA-256 digests, and passes those descriptors to the root helper. The helper installs the reviewed byte snapshots instead of reopening mutable source paths after `sudo` authentication.
 3. **Complete FIR-bank Publication**: The installer builds and validates the standard and downmix banks in a private staging directory, including eight WAV files, `fir-bank.bin`, and the manifest. It exchanges the complete asset directory atomically and retains the previous directory until held readers can finish. A later publication failure exchanges the previous bank back.
-4. **Configuration Preservation & Automatic Backups**: User-customized WirePlumber profiles (`51-inzone-h9-ii.conf`), the managed PipeWire filter-chain file (`51-inzone-h9-ii-dsp.conf`), DSP configurations (`profile-settings.json`), custom profiles (`sound-profiles.json`), and auto-switch rules (`auto-profiles.json`) are preserved across reinstallation. Previous managed configurations are backed up to `~/.local/state/inzone-linux/backups/` before replacement.
+4. **Configuration Preservation & Automatic Backups**: Persistent DSP settings (`profile-settings.json`), custom profiles (`sound-profiles.json`), and auto-switch rules (`auto-profiles.json`) are preserved across reinstallation. The active WirePlumber profile and dedicated filter-chain fragment under `~/.config/inzone-h9-ii/filter-chain.conf.d/` are regenerated from the selected profile. Previous managed configurations are backed up to `~/.local/state/inzone-linux/backups/` before replacement. On upgrade, the former `~/.config/pipewire/pipewire.conf.d/51-inzone-h9-ii-dsp.conf` is backed up and replaced with `{}` so a future main PipeWire start does not load duplicate DSP nodes.
+
+The dedicated `inzone-filter-chain.service` reads its base configuration and active
+DSP fragment from `~/.config/inzone-h9-ii/`. It is enabled by a managed symlink in
+`~/.config/systemd/user/default.target.wants/`. Profile changes restart this
+service and WirePlumber while leaving the main PipeWire and pipewire-pulse services
+running. The controller temporarily parks application playback streams from managed
+INZONE outputs on a private null sink, then moves them to the selected output or
+their explicit original route before unloading that sink. An upgrade from the former
+main-daemon DSP fragment requires one main
+PipeWire restart to unload modules that were already loaded before migration.
+The installation command performs this restart once when it replaces an active
+legacy daemon fragment.
 
 Atomic replacement describes runtime directory visibility and rollback on reported
 errors. It does not claim a journaled transaction that survives power loss between

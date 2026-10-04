@@ -71,6 +71,6 @@ help:
 		'DSP: SWIFTC=swiftc, SWIFT_DSP_FLAGS=-O -whole-module-optimization' \
 		'Offline assets: make assets FETCH_FLAGS=--offline (requires prepared Swift packages and extraction tools)' \
 		'Runtime: native Swift executable at $$INSTALL_HOME/.local/bin/inzone-profile.' \
-		'Configs: profile templates, WirePlumber rules, a systemd user unit, and udev rules.' \
+		'Configs: profile templates, WirePlumber rules, systemd user units, and udev rules.' \
 		'Reinstall: back up existing files, refresh templates, and preserve user state and legacy installed files.' \
 		'Run make without sudo; install writes user files first and requests administrator privileges only for fixed system paths.'

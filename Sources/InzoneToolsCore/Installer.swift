@@ -104,7 +104,10 @@ public struct Installer {
         required += ["sony-eq-tables.json", "sony-presets.json"].map { repository.appendingPathComponent("assets/\($0)") }
         guard required.allSatisfy(isFile) else { throw InzoneError.message("Assets are missing. Run: make assets") }
         let templates = ["fps", "music", "voice", "balanced", "original"]
-        let configFiles = templates.map { $0 + ".conf" } + ["52-inzone-game-chat.conf", "systemd/inzone-profile-auto.service"]
+        let configFiles = templates.map { $0 + ".conf" } + [
+            "52-inzone-game-chat.conf", "filter-chain.conf",
+            "systemd/inzone-profile-auto.service", "systemd/inzone-filter-chain.service",
+        ]
         for path in configFiles where !isFile(repository.appendingPathComponent("configs/\(path)")) {
             throw InzoneError.message("Missing repository configuration: \(path)")
         }
@@ -141,6 +144,11 @@ public struct Installer {
         let wireplumber = home.appendingPathComponent(".config/wireplumber/wireplumber.conf.d")
         let executable = home.appendingPathComponent(".local/bin/inzone-profile")
         let unit = home.appendingPathComponent(".config/systemd/user/inzone-profile-auto.service")
+        let filterUnit = home.appendingPathComponent(".config/systemd/user/inzone-filter-chain.service")
+        let filterEnableLink = home.appendingPathComponent(
+            ".config/systemd/user/default.target.wants/inzone-filter-chain.service"
+        )
+        try validateFilterServiceEnableLink(filterEnableLink, unit: filterUnit)
         let decoder = paths.shareDirectory.appendingPathComponent("decoder")
         let backup = home.appendingPathComponent(".local/state/inzone-linux/backups/\(backupStamp())")
         let backupPaths = [
@@ -148,6 +156,8 @@ public struct Installer {
             ".local/share/inzone-linux/python", ".config/inzone-h9-ii", ".local/bin/inzone-profile",
             ".config/wireplumber/wireplumber.conf.d/52-inzone-game-chat.conf", ".config/mpv/mpv.conf",
             ".config/systemd/user/inzone-profile-auto.service",
+            ".config/systemd/user/inzone-filter-chain.service",
+            ".config/systemd/user/default.target.wants/inzone-filter-chain.service",
             ".config/pipewire/pipewire.conf.d/51-inzone-h9-ii-dsp.conf",
         ]
         for path in backupPaths {
@@ -167,9 +177,10 @@ public struct Installer {
             paths.pluginURL, data.appendingPathComponent("sony-surround.json"),
             data.appendingPathComponent("surround.conf"),
             wireplumber.appendingPathComponent("52-inzone-game-chat.conf"), paths.activeProfile,
-            paths.activeDSPProfile,
+            paths.filterChainConfiguration, paths.activeDSPProfile, paths.legacyDSPProfile,
             data.appendingPathComponent("README.md"), data.appendingPathComponent("docs"),
-            executable, unit, home.appendingPathComponent(".config/mpv/mpv.conf"),
+            executable, unit, filterUnit, filterEnableLink,
+            home.appendingPathComponent(".config/mpv/mpv.conf"),
         ]
         let rollbackSnapshots = try snapshotInstallationTargets(rollbackTargets, into: rollbackRoot)
         let stagedAssets = paths.shareDirectory.appendingPathComponent(".assets-stage-\(UUID().uuidString)")
@@ -195,6 +206,7 @@ public struct Installer {
                 to: data.appendingPathComponent("surround.conf"), permissions: 0o644
             )
             try copy(repository.appendingPathComponent("configs/52-inzone-game-chat.conf"), to: wireplumber.appendingPathComponent("52-inzone-game-chat.conf"))
+            try copy(repository.appendingPathComponent("configs/filter-chain.conf"), to: paths.filterChainConfiguration)
             if let identifier = existingActiveProfile,
                let profile = try SettingsStore(paths: paths).profileIfAvailable(identifier) {
                 let template = try String(
@@ -213,6 +225,12 @@ public struct Installer {
             // Install the validated snapshot so the source cannot change between validation and publication.
             try write(binaryFile.data, to: executable, permissions: 0o755)
             try copy(repository.appendingPathComponent("configs/systemd/inzone-profile-auto.service"), to: unit)
+            try copy(repository.appendingPathComponent("configs/systemd/inzone-filter-chain.service"), to: filterUnit)
+            try enableFilterService(filterEnableLink, unit: filterUnit)
+            if manager.fileExists(atPath: paths.legacyDSPProfile.path) {
+                // The legacy daemon fragment must not load a second copy of the managed filter nodes.
+                try write(Data("{}\n".utf8), to: paths.legacyDSPProfile, permissions: 0o644)
+            }
             let mpv = home.appendingPathComponent(".config/mpv/mpv.conf")
             if manager.fileExists(atPath: mpv.path) {
                 let previousFile = try readDataAndSafeRegularFilePermissions(from: mpv)
@@ -463,6 +481,36 @@ public struct Installer {
             }
             try manager.removeItem(at: publication.previous)
         }
+    }
+
+    private func validateFilterServiceEnableLink(_ link: URL, unit: URL) throws {
+        var status = stat()
+        if Glibc.lstat(link.path, &status) != 0 {
+            guard errno == ENOENT else {
+                throw InzoneError.message("Cannot inspect filter service enable link: \(link.path).")
+            }
+            return
+        }
+        guard (status.st_mode & S_IFMT) == S_IFLNK else {
+            throw InzoneError.message("The filter service enable path is occupied: \(link.path).")
+        }
+        let destination = try manager.destinationOfSymbolicLink(atPath: link.path)
+        let target = destination.hasPrefix("/")
+            ? URL(fileURLWithPath: destination)
+            : link.deletingLastPathComponent().appendingPathComponent(destination)
+        guard target.standardizedFileURL == unit.standardizedFileURL else {
+            throw InzoneError.message("The filter service enable link targets another unit: \(link.path).")
+        }
+    }
+
+    private func enableFilterService(_ link: URL, unit: URL) throws {
+        try validateFilterServiceEnableLink(link, unit: unit)
+        var status = stat()
+        if Glibc.lstat(link.path, &status) == 0 { return }
+        try createDirectory(link.deletingLastPathComponent())
+        try manager.createSymbolicLink(
+            atPath: link.path, withDestinationPath: "../inzone-filter-chain.service"
+        )
     }
 
     private func createDirectory(_ directory: URL) throws {

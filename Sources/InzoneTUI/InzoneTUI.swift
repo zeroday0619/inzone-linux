@@ -727,6 +727,13 @@ final class TerminalModel {
 
     func applyDeviceChanges() {
         guard !busy, screen == .device, !pendingDeviceValues.isEmpty else { return }
+        if pendingDeviceValues["ambient_level"] != nil || pendingDeviceValues["voice_focus"] != nil {
+            let currentMode = deviceRows.first { $0.key == "anc" }?.value
+            if currentMode != 2 && pendingDeviceValues["anc"] != 2 {
+                message = "Select Ambient Sound mode before changing Ambient level or Voice focus."
+                return
+            }
+        }
         guard canApplyDeviceChanges else {
             message = "Some settings are unavailable. Refresh before applying."
             return
@@ -748,6 +755,7 @@ final class TerminalModel {
             return (row, value)
         }.sorted { left, right in
             func priority(_ change: (DeviceRow, Int)) -> Int {
+                if change.0.key == "anc" { return change.1 == 2 ? 0 : 2 }
                 guard ["toggle_off", "toggle_nc", "toggle_ambient"].contains(change.0.key) else { return 1 }
                 return change.1 == 1 ? 0 : 2
             }
@@ -1686,7 +1694,7 @@ private struct TouchTerminalScreen: View {
                 Text(model.title).bold()
                 setting("Dynamic range", value: ["Off", "Low", "High"][min(2, max(0, model.options.drc))], character: "d")
                 setting("Output leveling", value: model.options.outputALC ? "On" : "Off", character: "a")
-                setting("Microphone gain", value: model.options.microphoneAGC ? "On" : "Off", character: "m")
+                setting("Microphone auto gain", value: model.options.microphoneAGC ? "On" : "Off", character: "m")
                 if model.profileIsSurround {
                     setting("Spatial filter", value: model.options.hrtf == "personal" ? "Personal" : "Standard", character: "p")
                 }

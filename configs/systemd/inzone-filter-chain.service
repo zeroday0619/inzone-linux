@@ -1,0 +1,17 @@
+[Unit]
+Description=INZONE H9 II DSP filter chain
+Requires=pipewire.service wireplumber.service
+After=pipewire.service wireplumber.service
+PartOf=wireplumber.service
+StartLimitIntervalSec=60
+StartLimitBurst=120
+
+[Service]
+Type=simple
+Environment="PIPEWIRE_CONFIG_DIR=%h/.config/inzone-h9-ii"
+ExecStart=/usr/bin/pipewire -c filter-chain.conf
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

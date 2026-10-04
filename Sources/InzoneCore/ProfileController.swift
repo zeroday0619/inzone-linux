@@ -28,15 +28,18 @@ public final class ProfileController: Sendable {
     public let runner: any CommandRunning
     private let logger: any DiagnosticLogging
     private let dspDebugLog: URL?
+    private let microphoneCapture: any MicrophoneCapturing
 
     public init(
         paths: InzonePaths, runner: any CommandRunning = SystemCommandRunner(),
-        logger: any DiagnosticLogging = DisabledDiagnosticLogger(), dspDebugLog: URL? = nil
+        logger: any DiagnosticLogging = DisabledDiagnosticLogger(), dspDebugLog: URL? = nil,
+        microphoneCapture: any MicrophoneCapturing = SystemMicrophoneCapture()
     ) {
         self.paths = paths
         self.runner = runner
         self.logger = logger
         self.dspDebugLog = dspDebugLog
+        self.microphoneCapture = microphoneCapture
     }
 
     public func status() throws -> String {
@@ -451,19 +454,31 @@ public final class ProfileController: Sendable {
     }
 
     private func writeActive(wirePlumber: String, pipeWire: String) throws {
+        let previousPipeWire = FileManager.default.fileExists(atPath: paths.activeDSPProfile.path)
+            ? try Data(contentsOf: paths.activeDSPProfile) : nil
         try AtomicFile.write(Data(pipeWire.utf8), to: paths.activeDSPProfile, permissions: 0o644)
         do {
             try AtomicFile.write(Data(wirePlumber.utf8), to: paths.activeProfile, permissions: 0o644)
         } catch {
-            try? AtomicFile.write(Data("{}\n".utf8), to: paths.activeDSPProfile, permissions: 0o644)
-            throw error
+            let writeError = error
+            do {
+                if let previousPipeWire {
+                    try AtomicFile.write(previousPipeWire, to: paths.activeDSPProfile, permissions: 0o644)
+                } else {
+                    try FileManager.default.removeItem(at: paths.activeDSPProfile)
+                }
+            } catch let restorationError {
+                throw rollbackError(original: writeError, restoration: restorationError)
+            }
+            throw writeError
         }
     }
 
     private func restartAudioServices() throws {
+        // Systemd must discover a newly installed filter service before its first restart.
+        _ = try runner.run(["systemctl", "--user", "daemon-reload"])
         let restart = [
-            "systemctl", "--user", "restart", "pipewire.service", "wireplumber.service",
-            "pipewire-pulse.service",
+            "systemctl", "--user", "restart", "wireplumber.service", "inzone-filter-chain.service",
         ]
         do {
             _ = try runner.run(restart)
@@ -510,13 +525,9 @@ public final class ProfileController: Sendable {
             profile: identifier, template: template
         )
         try writeActive(wirePlumber: rendered.wirePlumber, pipeWire: rendered.pipeWire)
+        var parkedStreams: PulseStreamParking?
+        var restartAttempted = false
         var dspDebugEnvironmentSet = false
-        if let dspDebugLog {
-            _ = try runner.run([
-                "systemctl", "--user", "set-environment", "INZONE_DSP_DEBUG_LOG=\(dspDebugLog.path)",
-            ])
-            dspDebugEnvironmentSet = true
-        }
         defer {
             if dspDebugEnvironmentSet {
                 do {
@@ -529,10 +540,22 @@ public final class ProfileController: Sendable {
             }
         }
         do {
+            if wasConnected {
+                parkedStreams = try PulseStreamParking.park(
+                    runner: runner, previousDefaultSink: previousDefault
+                )
+            }
+            if let dspDebugLog {
+                _ = try runner.run([
+                    "systemctl", "--user", "set-environment", "INZONE_DSP_DEBUG_LOG=\(dspDebugLog.path)",
+                ])
+                dspDebugEnvironmentSet = true
+            }
+            restartAttempted = true
             try restartAudioServices()
             _ = try runner.run([
                 "systemctl", "--user", "is-active", "pipewire.service", "wireplumber.service",
-                "pipewire-pulse.service",
+                "pipewire-pulse.service", "inzone-filter-chain.service",
             ])
             if dspDebugEnvironmentSet {
                 _ = try runner.run([
@@ -543,21 +566,46 @@ public final class ProfileController: Sendable {
             if wasConnected {
                 try verifyConnectedProfile(identifier)
             }
+            if let parkedStreams {
+                let selectedSink = try runner.run(["pactl", "get-default-sink"])
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                try parkedStreams.finish(defaultSink: selectedSink)
+            }
             return previousState
         } catch {
+            let activationError = error
             do {
-                try restore(wirePlumber: previous, pipeWire: previousDSP, defaultSink: previousDefault)
+                try parkedStreams?.parkAgain()
+                if restartAttempted {
+                    try restore(wirePlumber: previous, pipeWire: previousDSP, defaultSink: previousDefault)
+                } else {
+                    try writeActive(wirePlumber: previous, pipeWire: previousDSP)
+                }
+                try parkedStreams?.finish(defaultSink: previousDefault)
             } catch let restorationError {
-                throw rollbackError(original: error, restoration: restorationError)
+                throw rollbackError(original: activationError, restoration: restorationError)
             }
-            throw error
+            throw activationError
         }
     }
 
     private func restore(wirePlumber: String, pipeWire: String, defaultSink: String) throws {
-        try writeActive(wirePlumber: wirePlumber, pipeWire: pipeWire)
-        try restartAudioServices()
-        try restoreDefaultSink(defaultSink)
+        let parkedStreams = try PulseStreamParking.park(runner: runner)
+        do {
+            try writeActive(wirePlumber: wirePlumber, pipeWire: pipeWire)
+            try restartAudioServices()
+            try restoreDefaultSink(defaultSink)
+            try parkedStreams?.finish(defaultSink: defaultSink)
+        } catch {
+            let restorationError = error
+            do {
+                try parkedStreams?.parkAgain()
+                try parkedStreams?.restoreOriginalRouting()
+            } catch let routingError {
+                throw rollbackError(original: restorationError, restoration: routingError)
+            }
+            throw restorationError
+        }
     }
 
     private func restoreDefaultSink(_ defaultSink: String) throws {
@@ -714,9 +762,11 @@ public final class ProfileController: Sendable {
             guard let input else {
                 throw InzoneError.message("H9 II microphone DSP node was not found.")
             }
-            let properties = try runner.run(["pw-cli", "enum-params", input.identifier, "Props"])
-            guard properties.contains("mic_agc:") else {
-                throw InzoneError.message("Microphone AGC loading verification failed.")
+            try microphoneCapture.whileActive(source: input.name) {
+                let properties = try runner.run(["pw-cli", "enum-params", input.identifier, "Props"])
+                guard properties.contains("mic_agc:") else {
+                    throw InzoneError.message("Microphone AGC loading verification failed.")
+                }
             }
         }
         if profile?.isSurround == true {

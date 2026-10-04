@@ -4,12 +4,11 @@ import XCTest
 
 final class ProfileControllerTests: XCTestCase {
     private let restart = [
-        "systemctl", "--user", "restart", "pipewire.service", "wireplumber.service",
-        "pipewire-pulse.service",
+        "systemctl", "--user", "restart", "wireplumber.service", "inzone-filter-chain.service",
     ]
     private let active = [
         "systemctl", "--user", "is-active", "pipewire.service", "wireplumber.service",
-        "pipewire-pulse.service",
+        "pipewire-pulse.service", "inzone-filter-chain.service",
     ]
     private let previousSink = "previous-output"
 
@@ -789,7 +788,10 @@ final class ProfileControllerTests: XCTestCase {
         ])
 
         XCTAssertThrowsError(
-            try ProfileController(paths: fixture.paths, runner: runner)
+            try ProfileController(
+                paths: fixture.paths, runner: runner,
+                microphoneCapture: PassthroughMicrophoneCapture()
+            )
                 .changeOptions("balanced", updates: ["mic_agc": true])
         ) { error in
             XCTAssertTrue(String(describing: error).contains("Microphone AGC loading verification failed."))
@@ -1323,9 +1325,26 @@ final class ProfileControllerTests: XCTestCase {
     private final class ScriptedRunner: CommandRunning, @unchecked Sendable {
         private var steps: [Step]
 
-        init(_ steps: [Step]) { self.steps = steps }
+        init(_ steps: [Step]) {
+            var expected: [Step] = []
+            let restart = [
+                "systemctl", "--user", "restart", "wireplumber.service", "inzone-filter-chain.service",
+            ]
+            let resetFailure = ["systemctl", "--user", "reset-failed", "wireplumber.service"]
+            for step in steps {
+                if step.arguments == restart && expected.last?.arguments != resetFailure {
+                    expected.append(.output(["systemctl", "--user", "daemon-reload"]))
+                }
+                expected.append(step)
+            }
+            self.steps = expected
+        }
 
         func run(_ arguments: [String], input: Data?, timeout: TimeInterval) throws -> String {
+            if arguments == ["pactl", "list", "short", "sinks"]
+                || arguments == ["pactl", "list", "short", "sink-inputs"] {
+                return ""
+            }
             guard !steps.isEmpty else {
                 XCTFail("Unexpected command: \(arguments)")
                 throw InzoneError.message("Unexpected test command")
@@ -1342,6 +1361,13 @@ final class ProfileControllerTests: XCTestCase {
 
         func assertFinished(file: StaticString = #filePath, line: UInt = #line) {
             XCTAssertTrue(steps.isEmpty, "Unexecuted commands: \(steps.map(\.arguments))", file: file, line: line)
+        }
+    }
+
+    private struct PassthroughMicrophoneCapture: MicrophoneCapturing {
+        func whileActive(source: String, operation: () throws -> Void) throws {
+            XCTAssertEqual(source, "alsa_input.usb-Sony_INZONE_H9_II-00.mono-chat")
+            try operation()
         }
     }
 }

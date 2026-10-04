@@ -114,18 +114,23 @@ struct InzoneToolsCommand {
             print(try Digests.sha256(file: repository.appendingPathComponent("configs/udev/70-inzone-h9-ii.rules")))
         case "install-all":
             try options.validate(values: ["repository", "home", "binary", "payload"])
+            let legacyDSPWasActive = try hasLegacyDaemonDSP(paths: paths)
             let output = try InstallCoordinator(options: InstallCoordinatorOptions(
                 repository: repository,
                 home: paths.home,
                 binary: options.url("binary") ?? repository.appendingPathComponent(".build/release/inzone-profile"),
                 payload: options.url("payload")
             )).run()
+            if shouldRefreshInstalledAudioServices(paths: paths) {
+                try refreshInstalledAudioServices(migrateLegacyDSP: legacyDSPWasActive)
+            }
             let escapedHome = TerminalOutput.escaped(paths.home.path, preservingNewlines: false)
             print("Installed inzone-profile for \(escapedHome).")
             print("In the desktop user session, reconnect the USB dongle and run: inzone-profile surround")
             print(output, terminator: "")
         case "install":
             try options.validate(values: ["repository", "home", "binary", "payload", "expected-plugin-sha256"])
+            let legacyDSPWasActive = try hasLegacyDaemonDSP(paths: paths)
             guard let expectedPluginSHA256 = options.values["expected-plugin-sha256"] else {
                 throw InzoneError.message("install requires --expected-plugin-sha256 from plugin-digest.")
             }
@@ -137,6 +142,9 @@ struct InzoneToolsCommand {
                 binary: options.url("binary") ?? repository.appendingPathComponent(".build/release/inzone-profile"),
                 payload: options.url("payload"), expectedPluginSHA256: expectedPluginSHA256
             )).run()
+            if shouldRefreshInstalledAudioServices(paths: paths) {
+                try refreshInstalledAudioServices(migrateLegacyDSP: legacyDSPWasActive)
+            }
             let escapedHome = TerminalOutput.escaped(paths.home.path, preservingNewlines: false)
             print("Installed inzone-profile for \(escapedHome).")
             print("In the desktop user session, reconnect the USB dongle and run: inzone-profile surround")
@@ -213,6 +221,37 @@ struct InzoneToolsCommand {
             try LiveAutomation.run(paths: paths, repository: repository)
         default:
             throw InzoneError.message("Unknown tools command: \(command). Use --help.")
+        }
+    }
+
+    private static func hasLegacyDaemonDSP(paths: InzonePaths) throws -> Bool {
+        guard FileManager.default.fileExists(atPath: paths.legacyDSPProfile.path) else { return false }
+        let configuration = try String(contentsOf: paths.legacyDSPProfile, encoding: .utf8)
+        return configuration.contains("libpipewire-module-filter-chain")
+    }
+
+    private static func shouldRefreshInstalledAudioServices(paths: InzonePaths) -> Bool {
+        guard ProcessInfo.processInfo.environment["XDG_RUNTIME_DIR"] != nil,
+              let account = Glibc.getpwuid(Glibc.geteuid()) else { return false }
+        let accountHome = URL(fileURLWithPath: String(cString: account.pointee.pw_dir))
+        return paths.home.resolvingSymlinksInPath() == accountHome.resolvingSymlinksInPath()
+    }
+
+    private static func refreshInstalledAudioServices(migrateLegacyDSP: Bool) throws {
+        let runner = SystemCommandRunner()
+        do {
+            _ = try runner.run(["systemctl", "--user", "daemon-reload"], input: nil, timeout: 30)
+            if migrateLegacyDSP {
+                // Existing daemon-owned filter modules remain loaded until the main PipeWire process restarts.
+                _ = try runner.run([
+                    "systemctl", "--user", "restart", "pipewire.service", "wireplumber.service",
+                    "pipewire-pulse.service",
+                ], input: nil, timeout: 30)
+            }
+        } catch {
+            throw InzoneError.message(
+                "User installation completed, but audio service activation failed: \(error.localizedDescription)"
+            )
         }
     }
 }
