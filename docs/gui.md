@@ -34,7 +34,7 @@ The verified development configuration uses Swift 6.3.3 and Qt 6.11.2.
 | --- | --- |
 | Swift | 6.3 |
 | Qt | 6.10, including Core private headers, Qt Quick Controls and Layouts, Qt Wayland Client, and its platform plugin |
-| Build tools | CMake 3.29, Ninja, pkg-config |
+| Build tools | CMake 3.29, Ninja, pkg-config, and host `wayland-scanner` (`libwayland-bin` on Debian/Ubuntu) |
 | D-Bus library | libsystemd development headers |
 | Tests, enabled by default | Qt Quick Test, Qt Test, the QtTest QML module, Python 3, and `dbus-run-session` |
 

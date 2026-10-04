@@ -83,8 +83,11 @@ Each package job then performs these checks:
    scripts or install packages.
 
 Compilers, Qt code generators, tests, and package checks run as the runner user.
-APT installs host build prerequisites with `sudo` before these steps. Project
-builds do not use root privileges, containers, or chroots. SwiftPM and CMake
+APT installs host build prerequisites with `sudo` before these steps, including
+`libwayland-bin` for `wayland-scanner`. The workflow checks that the scanner runs
+before preparing the sysroot. Qt requires this host tool when locating its
+Wayland components; the scanner inside the target sysroot is not searched.
+Project builds do not use root privileges, containers, or chroots. SwiftPM and CMake
 parallelism is limited to two jobs for hosted runner memory.
 
 Toolchains, sysroots, package build directories, logs, and artifacts use

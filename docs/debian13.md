@@ -10,7 +10,11 @@ privileged project commands.
 
 The host needs CMake 3.29 or later, Ninja, Make, Git, Python 3.10 or later,
 `pkg-config`, `dpkg-dev`, `binutils`, `patchelf`, and a Swift toolchain containing
-Clang. Swift 6.3 is the minimum compiler version; the current package notices
+Clang. Install `libwayland-bin` on the host to provide `wayland-scanner` on
+`PATH`. CMake searches the host for build tools, so a scanner in the target
+sysroot does not satisfy this requirement.
+
+Swift 6.3 is the minimum compiler version; the current package notices
 require Swift 6.3.3. The [CI artifact verifier](ci.md#build-and-verification-steps)
 requires Python 3.11 or later.
 
