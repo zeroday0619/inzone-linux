@@ -1,30 +1,78 @@
-# Debian 13 packages
+# Build Debian 13 packages
 
 Debian 13 ships Qt 6.8, while QtBridge requires Qt 6.10 or later. The Debian 13
-package therefore includes a private Qt runtime. Its C, C++, and Swift targets
-are compiled against a Debian 13 amd64 sysroot. The compiler and QtBridge macro
-plugin run normally in the desktop session; this workflow does not use a
-container, chroot, or privileged build.
+package therefore bundles Qt and compiles its C, C++, and Swift targets against
+a Debian 13 amd64 sysroot. The compiler and QtBridge macro plugin run as the
+normal user on the host. The build does not use a container, chroot, or
+privileged project commands.
 
-## Prerequisites
+## Check prerequisites
 
-The host requires CMake 3.29 or later, Ninja, Python 3.10 or later, `pkg-config`,
-`dpkg-dev`, `patchelf`, and a Swift 6.3 toolchain containing Clang. The Qt SDK must
-provide Qt 6.10 or later, Qt Quick, the Basic controls style, Qt SVG, and the
-native Wayland and offscreen platform plugins. Use SDK binaries whose glibc
-requirements are compatible with Debian 13, or build the SDK against that
-sysroot. Do not point the bundled SDK option at `/usr`.
+The host needs CMake 3.29 or later, Ninja, Make, Git, Python 3.10 or later,
+`pkg-config`, `dpkg-dev`, `binutils`, `patchelf`, and a Swift toolchain containing
+Clang. Swift 6.3 is the minimum compiler version; the current package notices
+require Swift 6.3.3. The [CI artifact verifier](ci.md#build-and-verification-steps)
+requires Python 3.11 or later.
 
-The preparation helper downloads Debian packages through a dedicated APT
-configuration and verifies the signed archive indexes. It extracts payloads and
-dpkg dependency metadata without executing maintainer scripts or installing
-packages. It also downloads the official Qt 6.11.2 desktop SDK archives and
-verifies the pinned SHA-256 values in
-`packaging/debian/qt-sdk-6.11.2.json`. Preparation requires `apt-get`,
-`debian-archive-keyring`, and `bsdtar` from `libarchive-tools` on the host.
+Preparation also needs `apt-get`, a current Debian archive keyring, and
+`bsdtar` from `libarchive-tools`. The default keyring is supplied by
+`debian-archive-keyring`.
+
+The Qt SDK must provide Qt 6.10 or later, Qt Quick, the Basic controls style,
+Qt SVG, and native Wayland and offscreen platform plugins. The helper prepares
+Qt 6.11.2, which matches the included notice manifest. Another SDK version needs
+verified notices for its bundled runtime. Its binaries must have glibc
+requirements compatible with Debian 13, or be built against that sysroot.
+Use the same SDK for compilation and packaging. The bundled SDK option must
+point to a dedicated installation, not `/usr`.
+
+## Prepare the sysroot and Qt SDK
 
 ```sh
 python3 scripts/prepare-debian13.py /path/to/debian13-inputs
+```
+
+The helper uses a dedicated APT configuration to download packages from
+`trixie`, `trixie-updates`, and `trixie-security`. It verifies signed archive
+indexes, then extracts payloads and dpkg dependency metadata without installing
+packages or executing maintainer scripts.
+
+It also downloads the official Qt 6.11.2 desktop SDK archives and checks their
+pinned SHA-256 values in `packaging/debian/qt-sdk-6.11.2.json`. That manifest
+records each official download URL. The upstream SHA-1 values were checked
+before the SHA-256 pins were recorded.
+
+The Debian 13 commands are wrappers around shared helpers. If the host keyring
+predates Debian 13, supply a current keyring through the equivalent command:
+
+```sh
+python3 scripts/prepare-debian.py /path/to/debian13-inputs --suite trixie \
+  --keyring /path/to/debian-archive-keyring.gpg
+```
+
+### Refresh prepared inputs
+
+Use `--reuse` only with a directory created by the helper. Its ownership marker
+must be present and identify the same Debian suite. Refresh recreates the
+managed `root/` directory from the newest cached version of each package.
+Do not store unrelated files in the preparation directory.
+
+Debian security and point updates can change package versions. The preparation
+records its inputs in these files:
+
+| File | Purpose |
+| --- | --- |
+| `debian-manifest.json` | Downloaded package versions and SHA-256 values |
+| `apt/lists/` | Signed APT indexes |
+| `debian-target.json` and `root/.inzone-debian-target.json` | Target suite and architecture |
+| `qt/manifest.json` | Copy of the repository's fixed Qt archive versions, URLs, and hashes |
+
+The build rejects target metadata that does not match the requested suite and
+architecture. Preparation rejects reusing another suite's directory.
+
+## Build the package
+
+```sh
 scripts/build-debian13.sh \
   /path/to/debian13-inputs/root \
   /path/to/debian13-inputs/qt/sdk \
@@ -32,94 +80,71 @@ scripts/build-debian13.sh \
   /path/to/build-debian13
 ```
 
-The Debian 13 entry points delegate to the shared suite-aware helpers. The
-following preparation command is equivalent and accepts an explicit Debian
-archive keyring when the host's installed keyring predates Debian 13:
+The Swift toolchain path must contain `usr/bin/swiftc`. Additional arguments
+are passed to CMake. `INZONE_BUILD_JOBS` controls build parallelism and defaults
+to four. It applies to SwiftPM and the main CMake build; nested CMake builds
+retain an explicit `CMAKE_BUILD_PARALLEL_LEVEL` value if one is set.
 
-```sh
-python3 scripts/prepare-debian.py /path/to/debian13-inputs --suite trixie \
-  --keyring /path/to/debian-archive-keyring.gpg
-```
+CMake and SwiftPM may download pinned source dependencies. The build script
+does not download Qt, Debian packages, Sony assets, or firmware; prepare its
+inputs first.
 
-The shared `scripts/build-debian.sh` takes `trixie` before the four paths shown
-above. The helpers also accept `forky`; that build uses the forky sysroot and
-revision `1~forky1` while retaining the same pinned private Qt SDK. It does not
-replace the native system-Qt `make deb` build.
+The output is
+`packages/inzone-linux_0.1.0-1~deb13u1_amd64.deb` below the build directory.
+It contains the [standard application components](debian.md#choose-a-package)
+plus Qt libraries, QML modules, plugins, and required SDK support libraries
+under `/usr/lib/inzone-linux/qt/`.
 
-Use `--reuse` to refresh a directory created by this helper. The ownership
-marker must be present. Refresh reconstructs its managed `root/` directory from
-the newest cached version of each package, so old library files cannot remain.
-Do not store unrelated files in that directory. The helper uses `trixie`,
-`trixie-updates`, and `trixie-security`. Debian security and
-point updates can change the sysroot package versions; `debian-manifest.json`
-records every downloaded package version and SHA-256. The signed APT indexes
-remain under `apt/lists/`. `debian-target.json` and the sysroot's
-`.inzone-debian-target.json` record the suite and architecture. The build rejects
-a mismatched target, and preparation rejects reusing another suite's directory. Qt archive versions and hashes are fixed in the
-repository manifest. Its upstream SHA-1 values were checked before recording
-the SHA-256 pins, and the manifest records each official download URL.
+The shared `scripts/build-debian.sh` command accepts `trixie` followed by the
+same four paths. Both shared helpers also accept `forky`, which selects a forky
+sysroot and package revision `1~forky1` with the same pinned private Qt SDK.
+See [CI and local reproduction](ci.md) for that build. Native `make deb` uses
+the build host's system Qt.
 
-An externally prepared Debian 13 amd64 sysroot must contain these development
-packages and their runtime dependencies:
+### Supply an external Debian 13 sysroot
+
+An external amd64 sysroot must contain glibc 2.41 and these development packages
+with their runtime dependencies:
 
 - `libc6-dev`, `libstdc++-14-dev`, `libsystemd-dev`, and `ladspa-sdk`.
 - `libcurl4-openssl-dev`, `libgl-dev`, `libegl-dev`, `libvulkan-dev`,
   `libwayland-dev`, `libxkbcommon-dev`, and `libx11-dev`.
 - The Qt SDK's external dependencies, including fontconfig, FreeType, GLib,
-  D-Bus, XCB, XKB, OpenSSL, and the corresponding Wayland client libraries.
+  D-Bus, XCB, XKB, OpenSSL, and Wayland client libraries.
 
-The sysroot must retain `/var/lib/dpkg/status` and the matching `info/*.list`,
-`info/*.symbols`, and `info/*.shlibs` files. An export of an existing Debian 13
-installation provides this metadata. When assembling a sysroot from `.deb`
-archives, use the signed Debian archive indexes to verify the downloads, extract
-payloads with `dpkg-deb --extract`, and retain their control metadata. Package
-maintainer scripts do not need to run. Include `/lib -> usr/lib` and
-`/lib64 -> usr/lib64` merged-directory links when required by the toolchain.
+Retain `/var/lib/dpkg/status` and the matching `info/*.list`, `info/*.symbols`,
+and `info/*.shlibs` files. An export of a Debian 13 installation provides this
+metadata. When assembling a sysroot from `.deb` archives, verify downloads
+against signed Debian archive indexes, extract them with `dpkg-deb --extract`,
+and retain their control metadata. Maintainer scripts do not need to run.
+Include `/lib -> usr/lib` and `/lib64 -> usr/lib64` links where required by the
+toolchain.
 
-The build script creates `usr/lib/swift` and `usr/lib/swift_static` symlinks in
-the supplied sysroot if they are absent. Existing links must select the supplied
-Swift toolchain. These provide the Swift startup objects and libraries; they are
-not copied into the system installation.
+Legacy Debian 13 sysroots without target metadata remain accepted after
+the glibc version check. If target metadata is present, it must identify
+`trixie` and `amd64`.
 
-## Build
+The build creates `usr/lib/swift` and `usr/lib/swift_static` symlinks inside the
+sysroot when absent. Existing paths must resolve to the supplied Swift
+toolchain. These links provide startup objects and libraries; the build does
+not copy them into the system installation.
 
-```sh
-scripts/build-debian13.sh \
-  /path/to/debian13-sysroot \
-  /path/to/qt-sdk \
-  /path/to/swift-toolchain \
-  /path/to/build-debian13
-```
+## Verify target compatibility
 
-The Swift toolchain argument is the directory containing `usr/bin/swiftc`.
-Additional arguments are passed to CMake. `INZONE_BUILD_JOBS` controls parallel
-build jobs and defaults to four. Pinned source dependencies can be downloaded by
-CMake and SwiftPM; the script does not download Qt, Debian packages, Sony assets,
-or firmware.
+The build passes the SDK through both SwiftPM's `--sdk` option and Swift's
+frontend `-sdk` argument. These select the sysroot for Clang imports and Swift
+compilation respectively. C and C++ use the sysroot's GCC headers, startup
+objects, and standard libraries.
 
-The output is `packages/inzone-linux_0.1.0-1~deb13u1_amd64.deb` below the build
-directory. It includes the same application components as the native package
-and adds Qt libraries, QML modules, plugins, and required SDK support libraries
-under `/usr/lib/inzone-linux/qt/`.
+`packaging/debian/sysroot_shlibdeps.py` makes a build-local copy of the sysroot
+package database with relocated file lists. CPack runs `dpkg-shlibdeps` against
+that database to derive dependencies from Debian 13 symbols. Before dependency
+generation, the helper uses the Debian 13 dynamic loader with its cache disabled
+to resolve every packaged ELF file. Missing libraries, newer symbol
+requirements, or resolution outside the package and sysroot abort packaging.
 
-The script sets the SDK for SwiftPM twice because its `--sdk` option controls
-Clang's sysroot while Swift's frontend also needs an explicit `-sdk` argument.
-C and C++ use the sysroot's GCC headers, startup objects, and standard libraries.
-
-## Dependency and ABI checks
-
-`packaging/debian/sysroot_shlibdeps.py` creates a build-local copy of the sysroot
-package database with relocated file lists. CPack then runs `dpkg-shlibdeps`
-against that database, so library versions are derived from Debian 13 symbols
-rather than the build host's distribution.
-
-Before dependency generation, the helper asks the Debian 13 dynamic loader to
-resolve every packaged ELF file. It disables the loader cache and checks that
-all resolved libraries belong to the package or sysroot. Missing libraries,
-newer symbol requirements, and host-library fallback abort packaging.
-
-Verify the completed artifact, including GUI and CLI execution against that
-userspace:
+Verify the completed package, including GUI and CLI execution with the target
+loader and libraries:
 
 ```sh
 python3 scripts/verify-debian.py \
@@ -127,19 +152,19 @@ python3 scripts/verify-debian.py \
   --sysroot /path/to/debian13-inputs/root
 ```
 
-The verifier checks the original archive and bundled library hashes first. It
-then changes only its temporary extracted executable copies to use the sysroot
-loader. The `.deb` remains unchanged, and no files are installed on the host.
+The verifier checks the original archive and bundled library hashes before
+changing temporary executable copies to use the sysroot loader. It leaves the
+`.deb` unchanged and installs no files on the host.
 
-This verifies the packaged ELF dependency closure against Debian 13 userspace.
-It does not boot a Debian 13 installation or exercise package maintainer scripts
-with root privileges. A native Debian 13 installation test remains a separate
-release acceptance step.
+The bundled data-only `libicudata.so.73` has no `DT_NEEDED` entries and can
+produce a Lintian `shared-library-lacks-prerequisites` warning. The warning is
+retained, and the package still undergoes dependency and runtime checks.
 
-The bundled ICU data library can produce one Lintian warning:
-`shared-library-lacks-prerequisites` for `libicudata.so.73`. This data-only library
-has no `DT_NEEDED` entries. The warning is retained; the full package dependency
-and runtime checks still apply.
+These checks establish the packaged ELF dependency closure and execution
+against Debian 13 userspace. They do not boot a Debian 13 desktop or run
+privileged maintainer scripts. Native installation and removal remain release
+acceptance checks. See the [validation record](debian.md#validation-record) for
+completed tests and their limits.
 
 ## References
 

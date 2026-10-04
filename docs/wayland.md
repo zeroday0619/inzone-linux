@@ -1,14 +1,55 @@
 # Wayland desktop support
 
-## Scope
+The compatibility targets are KDE Plasma, GNOME, Hyprland, and Sway. They cover
+profile and equalizer editing, microphone and headset controls, application
+rules, keyboard and text input, window management, and per-output scaling.
+The [acceptance record](#acceptance-record) separates completed tests from
+[remaining desktop-session checks](#remaining-desktop-session-validation). A
+smoke test alone does not establish full desktop compatibility.
 
-The supported desktop targets are KDE Plasma, GNOME, Hyprland, and Sway. The
-compatibility target covers the existing INZONE GUI: profile and equalizer
-editing, microphone and headset controls, application rules, keyboard and text
-input, window management, and per-output scaling. A successful smoke test alone
-is not evidence that every desktop interaction has been verified.
+## Check native Wayland startup
 
-## Runtime contract
+The GUI build requires Qt Wayland Client and its platform plugin in addition to
+the Qt Quick dependencies. On the verified Debian Qt 6.11.2 installation,
+`qt6-base-dev` provides the Wayland Client CMake package and
+`libqt6waylandclient6` provides `libqwayland.so`. Qt 6.10 distributions may package
+these components separately as `qt6-wayland-dev` and `qt6-wayland`. The user's
+desktop supplies the Wayland compositor; the application does not embed one.
+
+```sh
+inzone-gui --smoke-test --diagnostics /tmp/inzone-wayland.json
+cat /tmp/inzone-wayland.json
+```
+
+With automatic platform selection in a Wayland session, verify these report
+fields:
+
+| Field | Required value |
+| --- | --- |
+| `platformName` | `"wayland"` |
+| `nativeWayland` | `true` |
+| `desktopFileName` | `"dev.zeroday0619"` |
+| `window.exposed` | `true` |
+
+The report also records the Qt version, rendering API, screen names, logical
+sizes, window DPR, and icon availability. `--diagnostics -` writes to stdout.
+
+To explicitly require native Wayland without an X11 connection:
+
+```sh
+env -u DISPLAY QT_QPA_PLATFORM=wayland inzone-gui \
+  --smoke-test --diagnostics /tmp/inzone-native.json \
+  --screenshot /tmp/inzone-native.png
+```
+
+The screenshot captures only the application's own window. Explicit environment
+overrides remain visible in the diagnostic report.
+
+If the Wayland socket is unavailable, check the desktop session and its Wayland
+connection environment. If the platform plugin is missing, install or repair the
+Qt Wayland runtime. Both conditions cause startup to fail.
+
+## Runtime behavior
 
 - A Wayland session selects the native Qt `wayland` platform. There is no implicit
   XWayland fallback when that session cannot be opened.
@@ -36,39 +77,7 @@ The window's device pixel ratio is authoritative for fractional scaling;
 [`QScreen::devicePixelRatio()`](https://doc.qt.io/qt-6.11/qscreen.html#devicePixelRatio-prop)
 can differ from the window DPR on Wayland.
 
-## Requirements and diagnostics
-
-The GUI build requires Qt Wayland Client and its platform plugin in addition to
-the Qt Quick dependencies. On the verified Debian Qt 6.11.2 installation,
-`qt6-base-dev` provides the Wayland Client CMake package and
-`libqt6waylandclient6` provides `libqwayland.so`. Qt 6.10 distributions may package
-these components separately as `qt6-wayland-dev` and `qt6-wayland`. The Wayland compositor is supplied by the
-user's desktop; the application does not embed a compositor.
-
-```sh
-inzone-gui --smoke-test --diagnostics /tmp/inzone-wayland.json
-cat /tmp/inzone-wayland.json
-```
-
-In a Wayland session, the report must contain `platformName: "wayland"`,
-`nativeWayland: true`, `desktopFileName: "dev.zeroday0619"`, and an exposed window.
-It also records Qt version, rendering API, screen names, logical sizes, window
-DPR, and whether the icon is available. `--diagnostics -` writes to stdout.
-
-To explicitly require native Wayland without an X11 connection:
-
-```sh
-env -u DISPLAY QT_QPA_PLATFORM=wayland inzone-gui \
-  --smoke-test --diagnostics /tmp/inzone-native.json \
-  --screenshot /tmp/inzone-native.png
-```
-
-The screenshot captures only the application's own window. A missing Wayland
-socket or platform plugin is an error; installing or repairing the desktop's
-Qt Wayland runtime resolves that failure. Explicit environment overrides remain
-visible in the diagnostic report.
-
-## Automated validation
+## Run automated tests
 
 ```sh
 make gui-test SWIFT=/path/to/swift/toolchain/usr/bin/swift
@@ -79,10 +88,10 @@ make gui-wayland-test SWIFT=/path/to/swift/toolchain/usr/bin/swift
 and Qt input method events. Offscreen runs exercise scale factors 1, 1.25, 1.5,
 and 2. These are simulated DPI tests, separate from native Wayland validation.
 
-`gui-wayland-test` requires test tools `kwin_wayland`, `kscreen-doctor`, `qdbus6`
-(or Qt 6 `qdbus`), and `dbus-run-session`. It creates a private D-Bus session,
-Wayland socket and XDG directories. It never replaces the running desktop,
-starts XWayland, changes physical outputs, or writes headset settings.
+`gui-wayland-test` requires `kwin_wayland`, `kscreen-doctor`, `qdbus6` (or Qt 6
+`qdbus`), and `dbus-run-session`. It creates a private D-Bus session, Wayland
+socket, and XDG directories. Tests run in a separate compositor without XWayland;
+they leave the running desktop, physical outputs, and headset settings unchanged.
 
 The native suite verifies:
 
@@ -97,15 +106,16 @@ The native suite verifies:
 - QML control interactions on every scale and Hangul preedit, Return/Enter,
   commit, cancellation, and exact saved text through `QInputMethodEvent`.
 
-Artifacts are written under `build/gui/wayland-validation/` or the selected
-`GUI_BUILD_DIRECTORY`. The native tests deliberately fail when their compositor
-or protocol assertions are unavailable; they do not report a skip as a pass.
+Artifacts are written to `wayland-validation/` under `GUI_BUILD_DIRECTORY`. The
+default artifact directory is `build/gui/wayland-validation/`. Native tests fail
+when compositor prerequisites or protocol assertions are unavailable; they do
+not count skips as passes.
 
-## Additional compositor suites
+### Test Sway, Hyprland, and GNOME
 
-Enable the installed compositor executables explicitly. These are test tools,
-not production dependencies of the INZONE application. GNOME tests require a
-Python interpreter with PyGObject, Gio, and GLib.
+Set the compositor executable paths to enable these suites. Compositors are
+test-only dependencies. GNOME also requires a Python interpreter with PyGObject,
+Gio, and GLib.
 
 ```sh
 make gui-test SWIFT=/path/to/swift/toolchain/usr/bin/swift \
@@ -123,10 +133,10 @@ Each suite validates 100%, 125%, 150%, and 200% with actual compositor scales;
 1920 × 1440 because its default 1280 × 720 mode adjusts a requested 150% scale to
 160%. Requested and reported DPR must still match within 0.01.
 
-Tests fail when prerequisites or expected protocol behavior are unavailable.
-For extracted test packages, the caller can supply library/schema paths through
-its environment; `INZONE_GNOME_TEST_ENVIRONMENT` accepts a CMake list of additional
-GNOME fixture environment entries. No fixture downloads or installs a compositor.
+For extracted test packages, supply library and schema paths through the calling
+environment. `INZONE_GNOME_TEST_ENVIRONMENT` accepts a CMake list of additional
+GNOME fixture environment entries. Fixtures use the supplied executables without
+downloading or installing a compositor.
 
 ## Acceptance record
 
@@ -151,9 +161,9 @@ system and package maintainer scripts were not executed.
 
 ### Remaining desktop-session validation
 
-The compatibility target is full support for the existing GUI, but the tests
-above do not constitute a universal 100% certification across hardware and
-desktop versions. The following remain **Verification required**:
+Full support for the existing GUI remains the compatibility target. This record
+does not certify 100% coverage across hardware and desktop versions. The following
+remain **Verification required**:
 
 - Physical display hotplug and suspend/resume on each target desktop.
 - Fcitx/IBus candidate-window selection and clipboard exchange with other native

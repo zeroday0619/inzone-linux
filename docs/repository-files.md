@@ -1,131 +1,168 @@
-# Repository Structure & Asset Lifecycle
+# Repository files and asset lifecycle
 
-This document describes the repository layout, local static-analysis policy,
-build and deployment pipeline, and Git hygiene rules for contributors.
+This reference covers source files, generated assets, build targets, and
+installation behavior. Package installation is documented in
+[Debian packaging](debian.md); automated package builds are documented in
+[package CI](ci.md).
 
----
+## Tracked and local files
 
-## 1. Static Analysis and Publication Policy
+Sony installers, binaries, and decoded audio assets remain outside Git. Asset
+preparation verifies the pinned installer from Sony's servers and extracts the
+required filters and EQ tables locally without executing Windows binaries.
+The repository contains application source, the LADSPA interface, desktop and
+audio configuration, tests, and reviewed analysis summaries.
 
-The repository keeps Sony-derived binaries and decoded assets outside Git and
-uses them only through a local static-analysis pipeline:
+| Category | Tracked files | Local files excluded from Git |
+| --- | --- | --- |
+| Build and packaging | `Makefile`, `CMakeLists.txt`, `CMakePresets.json`, `Package.swift`, `Package.resolved`, `.github/workflows/`, `cmake/`, `packaging/`, `scripts/`, `native/Makefile`, `native/exports.map` | `.build/`, `.swiftpm/`, `build/`, `.deb` packages, object files, temporary files, and download caches |
+| Application source | `Sources/`, including CLI, TUI, GUI, D-Bus, HID, parsers, `InzoneDSP`, and `CLADSPA` | Built executables and `native/inzone_dsp.so` |
+| Configuration | `configs/` audio templates, `configs/systemd/`, `configs/dbus/`, `configs/udev/70-inzone-h9-ii.rules`, and `gui/` QML, desktop entry, and icon | `~/.config/inzone-h9-ii/` and active WirePlumber session state |
+| Asset and installation tools | `Sources/InzoneTools/`, `Sources/InzoneToolsCore/` | `tools/ilspycmd`, `tools/.store/`, `.dotnet/`, and `.nuget/` |
+| Analysis | `docs/`, `evidence/installer.json`, and `analysis/README.md` | `downloads/`, `analysis/payload/`, `analysis/decompiled/`, `analysis/reverse-engineering-inventory.json`, disassembly, and raw dumps |
+| Audio assets | No Sony audio assets | `assets/`, including EQ tables, HRTF data, and correction filters |
+| Validation | `Tests/` and selected reviewed `analysis/*-results.json` and device-write summaries | Unreviewed generated JSON, raw audio (`*.wav`, `*.f32`), and USB HID traces |
+| Backups | None | `backups/` and `~/.local/state/inzone-linux/backups/` |
 
-- **Copyright Protection**: Proprietary Sony binary deliverables (installer EXE, MSI, DLL, encrypted HRTF HKI, hardware correction BA files, etc.) are never tracked or committed to the Git repository.
-- **Automated Local Pipeline**: Required audio filters and EQ coefficient tables are downloaded directly from Sony official servers on the user's machine, verified with fixed SHA-256 digests, and statically extracted without running Windows executables.
-- **Analysis Inventory**: `reverse-engineering-inventory.json` records the `implemented-non-account-features` scope, selected managed source types, and feature payloads with their size and SHA-256. Firmware-related files are cataloged as `catalog-only-do-not-execute`.
-- **Runtime Boundary**: Firmware updater executables and firmware payloads are not installed. The pinned `inzonevirtualizer.dll` is retained as non-executable decoder input for local personalization import; Windows PE files are not accepted as the Linux application executable.
-- **Open-Source Deliverables**: Git contains independently written Swift source, the LADSPA interface, PipeWire/WirePlumber configurations, udev rules, tests, and reviewed technical summaries.
+`analysis/reverse-engineering-inventory.json` records the
+`implemented-non-account-features` scope, selected managed source types, and
+feature payload sizes and SHA-256 hashes. Firmware-related entries are marked
+`catalog-only-do-not-execute`. Updater payloads are excluded from the retained
+feature payload set and are not installed or executed.
 
----
+The pinned `inzonevirtualizer.dll` remains non-executable input for local
+personalization decoding. Windows PE files are not accepted as Linux
+application executables.
 
-## 2. File Classification Matrix
+## Build targets
 
-| Category | Tracked in Git (Public) | Local Machine Only (Git Excluded) |
-|---|---|---|
-| **Build & Packaging** | • Top-level `Makefile`, `CMakeLists.txt`, `CMakePresets.json`<br>• `.github/workflows/`, `scripts/ci/`, `cmake/`, `packaging/`, and Debian build scripts<br>• `native/Makefile`, `native/exports.map`<br>• `Package.swift`, `Package.resolved` | • Swift build caches (`.build/`, `.swiftpm/`)<br>• CMake build trees and Debian artifacts (`build/`, `*.deb`)<br>• Compilation temporaries (`*.o`, `*.tmp`)<br>• External download caches |
-| **Source Code** | • `Sources/` (CLI, TUI, Qt GUI, D-Bus service, HID control, parsers)<br>• `Sources/InzoneDSP/` (LADSPA DSP implementation)<br>• `Sources/CLADSPA/` (C ABI system module headers) | • Built executables (`inzone-profile`, `inzone-tools`, `inzone-gui`, `inzone-service`)<br>• Compiled DSP library (`native/inzone_dsp.so`) |
-| **System Configuration** | • `configs/` (WirePlumber templates and dedicated PipeWire filter-chain base configuration)<br>• `configs/systemd/` (User service units)<br>• `configs/dbus/` (Session bus activation)<br>• `gui/` (QML, desktop entry, and SVG icon)<br>• `configs/udev/` (`70-inzone-h9-ii.rules`) | • User runtime configurations (`~/.config/inzone-h9-ii/`)<br>• Active WirePlumber session state files |
-| **Development Tools** | • `Sources/InzoneTools/` (Developer/asset CLI)<br>• `Sources/InzoneToolsCore/` (Extraction/install/diagnostic core) | • Local ILSpy decompiler (`tools/ilspycmd`)<br>• `.dotnet/`, `.nuget/`, `tools/.store/` |
-| **Analysis Data** | • `docs/` (Technical specifications and architecture docs)<br>• `evidence/installer.json` (Official URLs and SHA-256)<br>• `analysis/README.md` | • `downloads/` (Official installer EXE/MSI)<br>• `analysis/payload/` (Pinned, publishable feature payloads; updater bytes excluded)<br>• `analysis/decompiled/` (Selected decompiled C# sources)<br>• `analysis/reverse-engineering-inventory.json` (catalog metadata, including updater hashes)<br>• Raw dumps (`*.asm`, `*.ole`, `*.strings-*.txt`) |
-| **Audio Assets** | None (Statically extracted locally) | • `assets/` (`sony-eq-tables.json`, HRTF/BA files, etc.) |
-| **Test & Verification** | • `Tests/` (Unit, integration, installation tests)<br>• Selected tracked `analysis/*-results.json` and device-write summaries | • Unreviewed generated JSON<br>• Raw audio recordings (`*.wav`, `*.f32`)<br>• Raw USB HID packet traces |
-| **Backup Data** | None | • `backups/`, `~/.local/state/inzone-linux/backups/` |
-
----
-
-## 3. Build & Asset Lifecycle (Make Targets)
-
-The top-level `Makefile` provides a structured workflow from dependency resolution to system installation:
+Run project builds as the desktop user. These arrows show prerequisite
+relationships in the top-level [Makefile](../Makefile):
 
 ```mermaid
-flowchart TD
-    A["make sync<br>Resolve Swift package dependencies"] --> B["make swift-build<br>Build CLI and asset tooling"]
-    B --> C["make fetch<br>Download official installer and verify SHA-256"]
-    C --> D["make assets<br>Extract MSI/CAB, decrypt HKI/BA, generate EQ tables"]
-    D --> E["make build<br>Build binaries and compile Embedded Swift LADSPA DSP"]
-    E --> F["make check<br>Run unit tests, DSP numerical checks, install tests"]
-    F --> G["make install<br>Deploy safely to user paths and system udev/LADSPA directories"]
+flowchart LR
+    S[make swift-build] --> A[make assets]
+    S --> F[make fetch]
+    S --> B[make build]
+    A --> B
+    N[make native-build] --> B
+    B --> I[make install]
+    B --> C[make check / make test]
 ```
 
-### Make Target Reference
+`make install` builds and installs the stack. Run `make check` separately to
+execute tests before installation.
 
-- **`make` (or `make install`)**: Executes the complete build and system installation. Deploys user files under the current account, invoking `sudo` safely only when writing to system directories (`/etc/udev/rules.d`, `/usr/lib/ladspa`).
-- **`make sync`**: Synchronizes Swift package dependencies based on `Package.swift` and `Package.resolved`.
-- **`make fetch`**: Downloads `INZONEHub_Setup_1.0.19.0.exe` from Sony official servers and verifies its fixed SHA-256 digest.
-- **`make assets`**: Uses pinned 7-Zip and ILSpy tooling to statically extract required HRTF filters, model correction filters, and 10-band EQ coefficient tables into `assets/` without executing Windows binaries. It also writes `analysis/reverse-engineering-inventory.json`. Generated assets and the managed payload set are staged and published by directory exchange only after all transformations succeed; exact known updater payload names are removed from the published payload set.
-- **`make native-build`**: Compiles `Sources/InzoneDSP/` in Embedded Swift mode to generate the high-performance, lightweight LADSPA plugin `native/inzone_dsp.so`.
-- **`make swift-build`**: Builds release binaries for `inzone-profile` and `inzone-tools` with a statically linked Swift standard library.
-- **`make check` (or `make test`)**: Runs unit tests, regression suites, and installation safety tests.
-- **`make deb`**: Builds the complete Debian binary package with private Swift runtime libraries. Sony assets and desktop-user setup remain separate. See [Debian packaging](debian.md).
-- **Debian packages workflow**: Builds and verifies `trixie` and `forky` amd64 packages on GitHub Actions. See [CI documentation](ci.md).
-- **`make help`**: Prints all available targets and configuration variables.
+| Command | Behavior |
+| --- | --- |
+| `make` or `make install` | Prepare assets, build the stack, and install user files; request `sudo` for the system udev and LADSPA files |
+| `make sync` | Resolve Swift dependencies using `Package.swift` and `Package.resolved` |
+| `make fetch` | Download `INZONEHub_Setup_1.0.19.0.exe` and verify its fixed SHA-256; do not extract it |
+| `make assets` | Prepare filters and EQ tables, the retained payload set, and the analysis inventory |
+| `make native-build` | Compile `Sources/InzoneDSP/` as the Embedded Swift LADSPA plugin `native/inzone_dsp.so` |
+| `make swift-build` | Build the CLI, setup utility, and service with a statically linked Swift runtime |
+| `make swift-test` | Build the DSP plugin and run Swift tests without preparing Sony assets; asset-dependent tests may skip |
+| `make check` or `make test` | Prepare assets, build, and run Swift tests without installing |
+| `make gui-build`, `make gui-test`, `make gui-install` | Build, test, or install the Qt desktop and D-Bus service; see [GUI documentation](gui.md) |
+| `make gui-wayland-test` | Run the isolated native Wayland suite; see [Wayland validation](wayland.md) |
+| `make deb` | Build a Debian package with its Swift runtime; see [Debian packaging](debian.md) |
+| `make help` | Print targets and configuration variables |
 
-A user-supplied `--ilspycmd` must be a regular host ELF64 x86-64 executable with
-an executable `PT_LOAD` segment. The extractor rejects PE input and executes the
-validated open inode through `/proc/<parent-pid>/fd/<descriptor>` so a path swap
-cannot select a different tool after validation.
+The [Debian packages workflow](ci.md) is configured to build and verify `trixie`
+and `forky` amd64 packages. Sony asset preparation remains a separate user step.
 
----
+## Asset preparation
 
-## 4. Safe Installation Mechanism (Security Architecture)
+Extraction uses an installed `7zz` or `7z` and a pinned ILSpy version. It
+statically extracts HRTF filters, model correction filters, and ten-band EQ
+tables. The prepared assets and retained payloads are staged before publication.
+Directory exchanges publish the completed data only after every transformation
+succeeds. Known updater payload names are removed from the retained set.
 
-The installer (`inzone-tools install-all`) separates user-owned installation
-steps from the fixed system-path writes that require root:
+A supplied `--ilspycmd` must be a regular ELF64 executable for the host
+architecture with an executable `PT_LOAD` segment. The extractor rejects PE
+files and runs the validated open inode through
+`/proc/<parent-pid>/fd/<descriptor>`. Replacing the source pathname after
+validation does not change the executable selected for that operation.
 
-1. **Principle of Least Privilege**: Running `sudo make` is unnecessary and discouraged. Nearly all files (binaries, configurations, profiles) are atomically deployed under regular user permissions (`~/.local/bin`, `~/.config`).
-2. **Bound System-file Snapshots (memfd sealing)**: For system files requiring root access (udev rules and LADSPA plugins), the process copies contents into Linux sealed anonymous memory file descriptors (`memfd`), verifies SHA-256 digests, and passes those descriptors to the root helper. The helper installs the reviewed byte snapshots instead of reopening mutable source paths after `sudo` authentication.
-3. **Complete FIR-bank Publication**: The installer builds and validates the standard and downmix banks in a private staging directory, including eight WAV files, `fir-bank.bin`, and the manifest. It exchanges the complete asset directory atomically and retains the previous directory until held readers can finish. A later publication failure exchanges the previous bank back.
-4. **Configuration Preservation & Automatic Backups**: Persistent DSP settings (`profile-settings.json`), custom profiles (`sound-profiles.json`), and auto-switch rules (`auto-profiles.json`) are preserved across reinstallation. The active WirePlumber profile and dedicated filter-chain fragment under `~/.config/inzone-h9-ii/filter-chain.conf.d/` are regenerated from the selected profile. Previous managed configurations are backed up to `~/.local/state/inzone-linux/backups/` before replacement. On upgrade, the former `~/.config/pipewire/pipewire.conf.d/51-inzone-h9-ii-dsp.conf` is backed up and replaced with `{}` so a future main PipeWire start does not load duplicate DSP nodes.
+## Installation behavior
 
-The dedicated `inzone-filter-chain.service` reads its base configuration and active
-DSP fragment from `~/.config/inzone-h9-ii/`. It is enabled by a managed symlink in
-`~/.config/systemd/user/default.target.wants/`. Profile changes restart this
-service and WirePlumber while leaving the main PipeWire and pipewire-pulse services
-running. The controller temporarily parks application playback streams from managed
-INZONE outputs on a private null sink, then moves them to the selected output or
-their explicit original route before unloading that sink. An upgrade from the former
-main-daemon DSP fragment requires one main
-PipeWire restart to unload modules that were already loaded before migration.
-The installation command performs this restart once when it replaces an active
-legacy daemon fragment.
+`inzone-tools install-all` writes user files before requesting administrator
+privileges for fixed system paths. User files go under `~/.local/bin`,
+`~/.local/share`, and `~/.config`. System writes target `/etc/udev/rules.d` and
+`/usr/lib/ladspa`. Do not run the build with `sudo make`.
 
-Atomic replacement describes runtime directory visibility and rollback on reported
-errors. It does not claim a journaled transaction that survives power loss between
-all user, system, and live-session steps.
+The installer copies the root helper executable, DSP plugin, and udev rule into
+sealed `memfd` snapshots. It verifies the source hashes and passes the snapshots
+to the privileged helper instead of reopening source paths after authentication.
 
----
+For each asset-bank update, the installer builds and validates the standard and
+downmix banks in a private staging directory, including eight WAV files,
+`fir-bank.bin`, and the manifest. It exchanges that directory with the installed
+bank and retains the previous bank for existing readers. A later publication
+failure restores the previous bank.
 
-## 5. Common Build Variables
+Reinstallation preserves `profile-settings.json`, `sound-profiles.json`, and
+`auto-profiles.json`. It regenerates the active WirePlumber profile and the
+selected filter-chain fragment under `~/.config/inzone-h9-ii/filter-chain.conf.d/`.
+Existing managed files are backed up under
+`~/.local/state/inzone-linux/backups/` before replacement.
 
-- **Offline Build**: When the installer has already been downloaded or in air-gapped environments:
-  ```sh
-  make assets FETCH_FLAGS=--offline
-  ```
-- **Custom Installer Path**:
-  ```sh
-  make assets FETCH_FLAGS='--installer /path/to/INZONEHub_Setup_1.0.19.0.exe'
-  ```
-- **Custom Swift Toolchain**:
-  ```sh
-  make SWIFT=/opt/swift/usr/bin/swift SWIFTC=/opt/swift/usr/bin/swiftc
-  ```
+### Audio service lifecycle
 
----
+`inzone-filter-chain.service` reads its base configuration and active fragment
+from `~/.config/inzone-h9-ii/`. User setup enables it through
+`~/.config/systemd/user/default.target.wants/`.
 
-## 6. Git Hygiene Guidelines
+Profile changes restart this service and WirePlumber while PipeWire and
+pipewire-pulse remain running. The controller parks playback streams from INZONE
+outputs on a temporary null sink, restores their selected or explicit original
+routes, and removes the temporary sink.
 
-Ensure proprietary assets or unnecessary large build artifacts are not accidentally committed:
+When upgrading the former daemon DSP configuration, the source installer backs
+up `~/.config/pipewire/pipewire.conf.d/51-inzone-h9-ii-dsp.conf` and replaces it
+with `{}`. It restarts desktop audio once to unload the old daemon filter
+modules. Debian package installation and `inzone-tools setup` do not restart
+audio; see [package setup](debian.md) for activation steps.
+
+Atomic replacement provides runtime visibility and rollback after reported
+errors. It does not provide a journaled transaction across user files, system
+files, and audio services that survives every power failure.
+
+## Build configuration examples
+
+Offline asset preparation requires the installer, Swift dependencies, and
+extraction tools to be available locally:
 
 ```sh
-# 1. Verify ignored files are cleanly excluded
-git status --short --ignored
+make assets FETCH_FLAGS=--offline
+```
 
-# 2. Inspect staged files to ensure no binaries (.exe, .dll, .so, .cab, .hki) are included
+Use an existing installer file:
+
+```sh
+make assets FETCH_FLAGS='--installer /path/to/INZONEHub_Setup_1.0.19.0.exe'
+```
+
+Select a Swift toolchain:
+
+```sh
+make SWIFT=/opt/swift/usr/bin/swift SWIFTC=/opt/swift/usr/bin/swiftc
+```
+
+## Review files before committing
+
+Check ignored files and the staged file list before publishing changes:
+
+```sh
+git status --short --ignored
 git ls-files --stage
 ```
 
-If a local-only file is accidentally staged:
+Keep proprietary installers, DLLs, encrypted filters, decoded assets, raw
+captures, and build output out of Git. If a local file was staged accidentally,
+untrack it while retaining the local copy:
+
 ```sh
-# Unstage safely while retaining local file on disk
 git rm --cached <filename>
 ```

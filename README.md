@@ -76,16 +76,16 @@ make
 
 > **Privilege Note**: Do not run `sudo make`. User-space files (`~/.local/bin`, `~/.config`) are installed under regular user permissions. `sudo` is requested only at the final step for installing udev rules (`/etc/udev/rules.d`) and system LADSPA plugins (`/usr/lib/ladspa`).
 
-Run installation in a foreground terminal. During administrator authentication,
-the installer hands terminal control to `sudo`, which reads the password directly.
-Password characters are not echoed. Terminal ownership and input settings are
-restored when the command finishes, fails, is interrupted, or times out.
-Upgrading from the former PipeWire daemon DSP configuration restarts the desktop
-audio services once to unload the old filter modules. Later profile changes restart
-WirePlumber and the dedicated INZONE filter service.
-During a profile change, active application playback streams on INZONE outputs move
-through a temporary null sink and return to the selected output. This keeps PulseAudio
-compatible applications connected when the previous virtual sink disappears.
+Run installation in a foreground terminal. The installer gives `sudo` terminal
+control during authentication and restores the terminal on completion, failure,
+interruption, or timeout. `sudo` reads the password directly without echoing it.
+
+An upgrade from the former PipeWire daemon DSP configuration restarts desktop
+audio once to unload the old filter modules. Later profile changes restart
+WirePlumber and the dedicated INZONE filter service while keeping PipeWire and
+pipewire-pulse running. Playback streams on INZONE outputs move to a temporary
+null sink during the switch, then return to the selected output. This preserves
+the connections used by PulseAudio-compatible applications.
 
 ### 3. Reconnect Device & Activate
 Unplug and replug the USB dongle to apply the new udev permissions, then activate the surround sound profile:
@@ -100,52 +100,66 @@ The Sony spatial audio stack is now active.
 
 ## Debian packages
 
-Build a complete Debian package for the current distribution with:
+The package contains the GUI, CLI, setup utility, session D-Bus service, DSP
+plugin, and private Swift runtime. Choose a build for the target distribution:
+
+| Build | Target | Qt runtime |
+| --- | --- | --- |
+| `make deb` | The distribution used to compile it | System Qt 6.10 or later |
+| CI `trixie` | Debian 13 amd64 | Bundled Qt 6.11.2 |
+| CI `forky` | Debian forky amd64 | Bundled Qt 6.11.2 |
+
+To build a package on the current distribution:
 
 ```sh
 make deb SWIFT=/path/to/swift/toolchain/usr/bin/swift
 ```
 
-The package includes the GUI, CLI, D-Bus service, DSP plugin, and private Swift
-runtime. Debian 13 builds also bundle a compatible Qt runtime. Sony assets are
-prepared separately with `inzone-tools setup`; package installation does not
-download assets or restart audio. See [Debian packaging](docs/debian.md) for
-build requirements, installation, user setup, and verification.
+Use Swift 6.3.3 for the runtime notices included in this repository. Package
+installation leaves Sony assets and user configuration to the explicit
+`inzone-tools setup` command and does not restart audio. See
+[Debian packaging](docs/debian.md) for prerequisites, installation, and setup.
 
-GitHub Actions builds and verifies amd64 packages for Debian 13 (`trixie`) and
-`forky` on every push and pull request. Both CI variants bundle Qt 6.11.2.
-Download the package and checksums from the successful **Debian packages** run;
-[CI documentation](docs/ci.md) describes the matrix, artifacts, and manual runs.
+The [Debian packages workflow](.github/workflows/debian-packages.yml) is configured
+for push, pull request, and manual runs. Successful jobs upload the `.deb`,
+checksums, and verification logs. See [package CI](docs/ci.md) for the artifacts,
+local reproduction commands, and the distinction between local checks and
+GitHub-hosted validation.
 
-## Qt Desktop Interface
+## Qt desktop interface
 
-The desktop uses Swift application logic, Qt Quick 6.10 or later, and the pinned
+The desktop uses Swift, Qt Quick 6.10 or later, and the pinned
 [Qt Bridge for Swift](https://github.com/qt/qtbridge-swift) `0.2.0-beta` revision.
-The interface follows [Fluent 2](https://fluent2.microsoft.design/) color, spacing,
-typography, and focus conventions. The existing CLI and TUI remain available.
+Its QML theme adapts [Fluent 2](https://fluent2.microsoft.design/) color roles,
+spacing, typography, and focus indicators. The CLI and TUI remain available.
 
-After installing the audio stack above, build and install the desktop as the
-regular desktop user:
+For a source installation, install the audio stack first, then build and install
+the desktop as the current desktop user:
 
 ```sh
 make gui-install SWIFT=/path/to/swift/toolchain/usr/bin/swift
 inzone-gui
 ```
 
-Use the Swift 6.3.3 toolchain for the tested build. Additional build requirements
-are CMake 3.29+, Ninja, Qt 6.10+ development files (including Qt Core private
-headers, Qt Quick Controls, and Qt Wayland Client/platform plugins), and `libsystemd-dev`. The GUI uses the selected
-Swift toolchain's shared runtime, which must remain installed. The service uses
-statically linked Swift runtime libraries.
+The verified toolchain is Swift 6.3.3 with Qt 6.11.2. GUI builds require CMake
+3.29 or later, Ninja, Qt Core private headers, Qt Quick Controls and Layouts,
+Qt Wayland Client and its platform plugin, and `libsystemd-dev`. The default
+build also enables tests, which require Qt Quick Test, Qt Test, and the QtTest
+QML module. See [GUI build requirements](docs/gui.md) for details.
 
-`inzone-profile --gui` also launches the desktop after rebuilding and installing
-the updated CLI. The session D-Bus starts `inzone-service` on demand; no system
-bus service or administrator privileges are required for GUI operation.
+The user-prefix `gui-install` build dynamically links the selected Qt and Swift
+runtimes; keep those libraries installed. Debian packages include their Swift
+runtime privately. The D-Bus service links the Swift runtime statically.
 
-See [docs/gui.md](docs/gui.md) for architecture, interaction behavior, installation
-paths, and validation commands, and [docs/dbus.md](docs/dbus.md) for the service
-interface. Native Wayland support targets KDE Plasma, GNOME, Hyprland, and Sway;
-see [docs/wayland.md](docs/wayland.md) for diagnostics and validation coverage.
+Launch the desktop with `inzone-gui` or `inzone-profile --gui`. The session bus
+activates `inzone-service` on demand. GUI operation uses the desktop user account
+and requires no system-bus service.
+
+| Reference | Content |
+| --- | --- |
+| [Desktop interface](docs/gui.md) | Build, installation paths, editing behavior, architecture, and tests |
+| [D-Bus API](docs/dbus.md) | Methods, state schema, errors, and diagnostics |
+| [Wayland support](docs/wayland.md) | KDE, GNOME, Hyprland, and Sway targets; diagnostics, validation, and remaining checks |
 
 ---
 
