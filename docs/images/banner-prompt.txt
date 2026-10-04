@@ -1,0 +1,17 @@
+Mode: built-in image_gen
+Intent: generate
+Transparent background: false
+Dimensions: 2172 x 724 pixels
+
+Final prompt:
+Use case: ads-marketing
+Asset type: wide GitHub README project banner, approximately 3:1 aspect ratio (ideally 1800 by 600 pixels).
+Primary request: a polished editorial banner for the independent Linux headset-control project INZONE LINUX.
+Scene/backdrop: deep graphite #202020 and #262626 with subtle tonal depth, clean opaque edge-to-edge background.
+Subject: precise abstract spatial-audio waves and curved concentric rings, restrained blue #0f6cbd with a little pale blue #77b7f7 illumination, forming a quiet sculptural audio motif.
+Style/medium: premium Fluent 2-inspired digital design with subtle dimensional light, controlled geometric curves, crisp typography, generous whitespace; sophisticated developer-project identity.
+Composition/framing: ultra-wide landscape banner with a strong readable typographic focal point and a balanced abstract audio motif that leaves the words unobstructed. Keep all text within generous safe margins, readable at typical GitHub README width. Moderate detail; avoid visual clutter.
+Text (verbatim): "INZONE LINUX"
+Subtitle (verbatim): "Native headset control for Linux"
+Typography: large bold modern sans-serif uppercase project title in soft white #f5f5f5, smaller regular-weight subtitle in light gray #c2c2c2. Render these exact two lines only, correctly spelled, with clear hierarchy and excellent contrast.
+Constraints: no fabricated GUI or app window, no physical product depiction, no Sony logo, no official vendor branding or endorsement implication, no Linux mascot, no badges, no feature claims, no additional text, no watermark, no border, no transparent background.

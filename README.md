@@ -1,3 +1,5 @@
+![INZONE Linux — Native headset control for Linux](docs/images/inzone-linux-banner.png)
+
 # Sony INZONE H9 II for Linux
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -132,6 +134,10 @@ The desktop uses Swift, Qt Quick 6.10 or later, and the pinned
 [Qt Bridge for Swift](https://github.com/qt/qtbridge-swift) `0.2.0-beta` revision.
 Its QML theme adapts [Fluent 2](https://fluent2.microsoft.design/) color roles,
 spacing, typography, and focus indicators. The CLI and TUI remain available.
+
+![INZONE Control showing sound profiles and the ten-band equalizer in the dark theme](docs/images/inzone-control.png)
+
+*The running Qt desktop on native Wayland, with an INZONE H9 II connected.*
 
 For a source installation, install the audio stack first, then build and install
 the desktop as the current desktop user:
