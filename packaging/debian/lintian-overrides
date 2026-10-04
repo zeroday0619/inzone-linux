@@ -1,0 +1,2 @@
+# Local binary packages are not Debian archive uploads and have no ITP bug.
+inzone-linux: initial-upload-closes-no-bugs

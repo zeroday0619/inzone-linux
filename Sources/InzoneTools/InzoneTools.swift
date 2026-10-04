@@ -23,6 +23,12 @@ struct InzoneToolsCommand {
     udev-rule-digest    Print the udev rule SHA-256 for a bound installation
     disassemble START END [--input FILE]
                         Print an existing disassembly between hexadecimal RVAs
+    setup               Initialize desktop-user configuration from an installed package
+      --assets-from DIRECTORY | --download
+      --home DIRECTORY --resources DIRECTORY
+      --assets-from requires prepared assets/ and analysis/payload/ directories.
+      --download obtains pinned assets and ilspycmd; requires 7-Zip and .NET 10.
+      Setup does not restart audio or replace a user-installed CLI.
     install-all         Install user files, then hand sealed executable and source snapshots to sudo
       --home DIRECTORY --binary FILE --payload DIRECTORY
     install             Install application files and configuration for the current user
@@ -112,6 +118,16 @@ struct InzoneToolsCommand {
         case "udev-rule-digest":
             try options.validate(values: ["repository"])
             print(try Digests.sha256(file: repository.appendingPathComponent("configs/udev/70-inzone-h9-ii.rules")))
+        case "setup":
+            try options.validate(values: ["home", "resources", "assets-from"], switches: ["download"])
+            let executable = URL(fileURLWithPath: "/proc/self/exe").resolvingSymlinksInPath()
+            try await PackagedSetup(options: PackagedSetupOptions(
+                resources: options.url("resources") ?? PackagedSetupOptions.resourceDirectory(executable: executable),
+                binary: executable.deletingLastPathComponent().appendingPathComponent("inzone-profile"),
+                home: paths.home, assetsFrom: options.url("assets-from"), download: options.switches.contains("download")
+            )).run()
+            print("Initialized INZONE desktop-user configuration. Audio services were not restarted.")
+            print("Reconnect the USB dongle if needed, then apply a profile with inzone-profile.")
         case "install-all":
             try options.validate(values: ["repository", "home", "binary", "payload"])
             let legacyDSPWasActive = try hasLegacyDaemonDSP(paths: paths)

@@ -1,0 +1,50 @@
+.TH INZONE-GUI 1 "2026-10-04" "inzone-linux 0.1.0" "User Commands"
+.SH NAME
+inzone-gui \- control INZONE headset profiles and settings
+.SH SYNOPSIS
+.B inzone-gui
+.RI [ options ]
+.SH DESCRIPTION
+.B inzone-gui
+opens the Qt Quick desktop interface for audio profiles, equalizer settings,
+microphone levels, headset controls, and application profile rules.
+It communicates with
+.B inzone-service
+on the desktop user's session D-Bus.
+.PP
+The desktop application identifier and D-Bus service name are
+.BR dev.zeroday0619 .
+The interface selects native Wayland in a Wayland session.
+.SH OPTIONS
+.TP
+.B --help
+Print usage information and exit.
+.TP
+.B --smoke-test
+Verify that an application window becomes visible and exit after two seconds.
+.TP
+.BI "--screenshot " PATH
+Save an image of the application window to
+.IR PATH .
+.TP
+.BI "--diagnostics " PATH
+Write JSON diagnostics for the Qt platform, application identity, display
+scaling, and rendering backend. Use
+.B -
+to write JSON to standard output.
+.SH ENVIRONMENT
+.TP
+.B QT_QPA_PLATFORM
+Override automatic Qt platform selection, for example with
+.B wayland
+or
+.BR offscreen .
+.SH SETUP
+Initialize audio configuration and acquire the separate Sony DSP assets with
+.BR inzone-tools (1)
+before applying an audio profile for the first time.
+Package installation does not initialize a user's audio configuration.
+.SH SEE ALSO
+.BR inzone-profile (1),
+.BR inzone-service (1),
+.BR inzone-tools (1)

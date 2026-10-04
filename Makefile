@@ -11,12 +11,14 @@ FETCH_FLAGS ?=
 CMAKE ?= cmake
 GUI_BUILD_DIRECTORY ?= $(CURDIR)/build/gui
 GUI_CMAKE_FLAGS ?=
+DEB_BUILD_DIRECTORY ?= $(CURDIR)/build/debian
+DEB_CMAKE_FLAGS ?=
 
 # Swift must use its own Clang and linker instead of inherited C build overrides.
 SWIFT_ENV = env -u CC -u CXX -u LD -u AR -u CFLAGS -u CXXFLAGS -u LDFLAGS
 GUI_ENV = $(SWIFT_ENV) PATH="$(if $(findstring /,$(SWIFTC)),$(dir $(SWIFTC)):)$(PATH)"
 
-.PHONY: all sync fetch assets native-build swift-build swift-test build install check test help check-user gui-configure gui-build gui-test gui-wayland-test gui-install
+.PHONY: all sync fetch assets native-build swift-build swift-test build install check test help check-user gui-configure gui-build gui-test gui-wayland-test gui-install deb
 
 all: install
 
@@ -76,6 +78,13 @@ gui-install: gui-build
 	"$(CMAKE)" --install "$(GUI_BUILD_DIRECTORY)"
 	systemctl --user daemon-reload
 
+deb: check-user
+	$(GUI_ENV) "$(CMAKE)" -S "$(CURDIR)" -B "$(DEB_BUILD_DIRECTORY)" -G Ninja \
+		-DCMAKE_BUILD_TYPE=Release -DCMAKE_Swift_COMPILER="$(SWIFTC)" \
+		-DCMAKE_INSTALL_PREFIX=/usr -DINZONE_DEBIAN_PACKAGE=ON $(DEB_CMAKE_FLAGS)
+	$(GUI_ENV) "$(CMAKE)" --build "$(DEB_BUILD_DIRECTORY)"
+	cd "$(DEB_BUILD_DIRECTORY)" && cpack -G DEB
+
 help:
 	@printf '%s\n' \
 		'make / make install  Download assets, build Swift, and install the CLI, DSP, and configs.' \
@@ -91,6 +100,7 @@ help:
 		'make gui-test        Build and smoke-test the desktop interface.' \
 		'make gui-wayland-test Run native Wayland tests with an isolated KWin compositor.' \
 		'make gui-install     Install the desktop and D-Bus service under INSTALL_HOME/.local.' \
+		'make deb             Build the complete Debian package for the build distribution.' \
 		'' \
 		'Variables: INSTALL_HOME=$$HOME, FETCH_FLAGS=' \
 		'Swift: SWIFT=swift, SWIFT_FLAGS=, SWIFT_CONFIGURATION=release, SWIFT_BINARY=.build/release/inzone-profile' \

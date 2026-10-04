@@ -117,3 +117,11 @@ The desktop selects native Wayland in Wayland sessions and uses
 `dev.zeroday0619` as its desktop application identifier. See
 [Wayland support](wayland.md) for platform overrides, diagnostics, compositor
 targets, scale validation, and the acceptance record.
+
+## Debian distribution
+
+The [Debian package](debian.md) includes the required Swift runtime privately.
+Its executables do not require an installed Swift toolchain. The Debian 13
+variant also carries a compatible Qt runtime with application-specific QML and
+plugin paths. Native packages use the distribution's Qt and declare the
+corresponding library and QML dependencies.

@@ -1,0 +1,42 @@
+.TH INZONE-SERVICE 1 "2026-10-04" "inzone-linux 0.1.0" "User Commands"
+.SH NAME
+inzone-service \- provide INZONE controls over the session D-Bus
+.SH SYNOPSIS
+.B inzone-service
+.RB [ --offline ]
+.br
+.B inzone-service --help
+.SH DESCRIPTION
+.B inzone-service
+serves the INZONE desktop interface through the desktop user's session D-Bus.
+D-Bus activation or the
+.B inzone-control.service
+user unit normally starts it when needed.
+.PP
+The well-known bus name is
+.BR dev.zeroday0619 ,
+the object path is
+.BR /dev/zeroday0619 ,
+and the control interface is
+.BR dev.zeroday0619.Control1 .
+Requests use the same profile and device controllers as the command-line
+interface.
+.SH OPTIONS
+.TP
+.B --help
+Print usage information and exit.
+.TP
+.B --offline
+Disable hardware and audio operations for isolated diagnostics.
+.SH FILES
+.TP
+.I /usr/share/dbus-1/services/dev.zeroday0619.service
+Session D-Bus activation configuration.
+.TP
+.I /usr/lib/systemd/user/inzone-control.service
+Systemd user service unit.
+.SH SEE ALSO
+.BR inzone-gui (1),
+.BR inzone-profile (1),
+.BR dbus-daemon (1),
+.BR systemctl (1)

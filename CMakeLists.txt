@@ -3,8 +3,21 @@ project(InzoneLinux VERSION 0.1.0 LANGUAGES C CXX Swift)
 
 include(GNUInstallDirs)
 include(FetchContent)
+option(INZONE_DEBIAN_PACKAGE "Build a complete Debian binary package" OFF)
+set(INZONE_BUNDLED_QT_PREFIX "" CACHE PATH "Optional Qt SDK bundled in the Debian package")
+if(INZONE_BUNDLED_QT_PREFIX)
+    list(PREPEND CMAKE_PREFIX_PATH "${INZONE_BUNDLED_QT_PREFIX}")
+endif()
 find_package(PkgConfig REQUIRED)
 find_package(Qt6 6.10 REQUIRED COMPONENTS Core Gui Qml Quick WaylandClient)
+if(INZONE_BUNDLED_QT_PREFIX)
+    file(REAL_PATH "${INZONE_BUNDLED_QT_PREFIX}" INZONE_REAL_QT_PREFIX)
+    file(REAL_PATH "${Qt6Core_DIR}" INZONE_QT_CORE_DIRECTORY)
+    cmake_path(IS_PREFIX INZONE_REAL_QT_PREFIX "${INZONE_QT_CORE_DIRECTORY}" NORMALIZE INZONE_QT_MATCHES_BUNDLE)
+    if(NOT INZONE_QT_MATCHES_BUNDLE)
+        message(FATAL_ERROR "The build and bundled Qt SDK must match. Configure a clean build directory with the requested Qt prefix.")
+    endif()
+endif()
 find_package(Qt6QWaylandIntegrationPlugin QUIET
     PATHS "${Qt6Gui_DIR}" "${Qt6WaylandClient_DIR}"
 )
@@ -59,6 +72,11 @@ add_dependencies(inzone-gui inzone-gui-resources)
 
 set(INZONE_SWIFTPM_SCRATCH_PATH "${CMAKE_BINARY_DIR}/swiftpm" CACHE PATH "SwiftPM build directory for the D-Bus service")
 set(INZONE_SERVICE_BINARY "${INZONE_SWIFTPM_SCRATCH_PATH}/release/inzone-service")
+set(INZONE_SWIFTPM_FLAGS "" CACHE STRING "Additional SwiftPM build arguments")
+if(INZONE_DEBIAN_PACKAGE)
+    list(APPEND INZONE_SWIFTPM_FLAGS -Xswiftc -use-ld=lld -Xlinker -z -Xlinker relro -Xlinker -z -Xlinker now)
+    target_link_options(inzone-gui PRIVATE -use-ld=lld "SHELL:-Xlinker -z -Xlinker relro" "SHELL:-Xlinker -z -Xlinker now")
+endif()
 file(GLOB_RECURSE INZONE_SERVICE_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/Sources/InzoneCore/*.swift"
     "${CMAKE_CURRENT_SOURCE_DIR}/Sources/InzoneService/*.swift"
@@ -71,7 +89,7 @@ add_custom_command(OUTPUT "${INZONE_SERVICE_BINARY}"
         "${INZONE_SWIFT_EXECUTABLE}" build
         --package-path "${CMAKE_CURRENT_SOURCE_DIR}"
         --scratch-path "${INZONE_SWIFTPM_SCRATCH_PATH}"
-        --configuration release --product inzone-service --static-swift-stdlib --disable-automatic-resolution
+        --configuration release --product inzone-service --static-swift-stdlib --disable-automatic-resolution ${INZONE_SWIFTPM_FLAGS}
     DEPENDS ${INZONE_SERVICE_SOURCES} Package.swift Package.resolved
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
     COMMENT "Building the Swift D-Bus service"
@@ -92,8 +110,13 @@ install(FILES gui/dev.zeroday0619.desktop DESTINATION "${CMAKE_INSTALL_DATADIR}/
 install(FILES gui/dev.zeroday0619.svg DESTINATION "${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps")
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/dev.zeroday0619.service"
     DESTINATION "${CMAKE_INSTALL_DATADIR}/dbus-1/services")
+if(INZONE_DEBIAN_PACKAGE)
+    set(INZONE_SYSTEMD_USER_DIRECTORY "lib/systemd/user")
+else()
+    set(INZONE_SYSTEMD_USER_DIRECTORY "${CMAKE_INSTALL_DATADIR}/systemd/user")
+endif()
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/inzone-control.service"
-    DESTINATION "${CMAKE_INSTALL_DATADIR}/systemd/user")
+    DESTINATION "${INZONE_SYSTEMD_USER_DIRECTORY}")
 
 include(CTest)
 option(INZONE_WAYLAND_TESTS "Run native Wayland tests with an isolated KWin compositor" OFF)
@@ -243,4 +266,8 @@ if(BUILD_TESTING)
             "${CMAKE_CURRENT_SOURCE_DIR}/Tests/InzoneServiceTests/Fixtures/session_bus.py"
             "${INZONE_SERVICE_BINARY}" "$<TARGET_FILE:InzoneDBusTestClient>")
     set_tests_properties(inzone-dbus-integration PROPERTIES TIMEOUT 30)
+endif()
+
+if(INZONE_DEBIAN_PACKAGE)
+    include(cmake/DebianPackaging.cmake)
 endif()

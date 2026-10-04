@@ -1,0 +1,69 @@
+{
+  "version": "6.3.3",
+  "foundationICUVersion": "76.1",
+  "files": [
+    {
+      "path": "icu-76.1/LICENSE",
+      "component": "icu-76.1",
+      "revision": "8eca245c7484ac6cc179e3e5f7c1ea7680810f39",
+      "source": "https://raw.githubusercontent.com/unicode-org/icu/8eca245c7484ac6cc179e3e5f7c1ea7680810f39/icu4c/LICENSE",
+      "sha256": "1e881ecf2862d01e6e5bc2b861e46886d2a6fb01499c0c508a209a7271b13cf2"
+    },
+    {
+      "path": "swift-corelibs-foundation/LICENSE",
+      "component": "swift-corelibs-foundation",
+      "revision": "6da8413b9a088eb59badcf0665aa73116db51edf",
+      "source": "https://raw.githubusercontent.com/swiftlang/swift-corelibs-foundation/6da8413b9a088eb59badcf0665aa73116db51edf/LICENSE",
+      "sha256": "0ca84095d1de77cad1a866ebbad28f8db98a0826c6055d92b0608c5baa1643e2"
+    },
+    {
+      "path": "swift-corelibs-libdispatch/LICENSE",
+      "component": "swift-corelibs-libdispatch",
+      "revision": "ffcd1b88af2f923501b16d9718c53275408e0dbf",
+      "source": "https://raw.githubusercontent.com/swiftlang/swift-corelibs-libdispatch/ffcd1b88af2f923501b16d9718c53275408e0dbf/LICENSE",
+      "sha256": "0ca84095d1de77cad1a866ebbad28f8db98a0826c6055d92b0608c5baa1643e2"
+    },
+    {
+      "path": "swift-foundation-icu/LICENSE.md",
+      "component": "swift-foundation-icu",
+      "revision": "e29ee41079d35eae68d98a7479864a19f2928d84",
+      "source": "https://raw.githubusercontent.com/swiftlang/swift-foundation-icu/e29ee41079d35eae68d98a7479864a19f2928d84/LICENSE.md",
+      "sha256": "2245a990b635558be210fb3eb4f8a6f7a49aebc0fefbf5859146a65ddc7ddcf3"
+    },
+    {
+      "path": "swift-foundation-icu/README.md",
+      "component": "swift-foundation-icu",
+      "revision": "e29ee41079d35eae68d98a7479864a19f2928d84",
+      "source": "https://raw.githubusercontent.com/swiftlang/swift-foundation-icu/e29ee41079d35eae68d98a7479864a19f2928d84/README.md",
+      "sha256": "d006265dc3603985a511d5b208cfd4fc7b0578a7272a0a1c0c336eed1cd4ea9f"
+    },
+    {
+      "path": "swift-foundation-icu/icuSources/include/_foundation_unicode/uvernum.h",
+      "component": "swift-foundation-icu",
+      "revision": "e29ee41079d35eae68d98a7479864a19f2928d84",
+      "source": "https://raw.githubusercontent.com/swiftlang/swift-foundation-icu/e29ee41079d35eae68d98a7479864a19f2928d84/icuSources/include/_foundation_unicode/uvernum.h",
+      "sha256": "dd8038453c55bcc1b7a2a7825dd995447363e962abc81171f1f10a142ca9161a"
+    },
+    {
+      "path": "swift-foundation/LICENSE.md",
+      "component": "swift-foundation",
+      "revision": "dbacc67779dc0a41ddc9493acbaa332d76c9fb03",
+      "source": "https://raw.githubusercontent.com/swiftlang/swift-foundation/dbacc67779dc0a41ddc9493acbaa332d76c9fb03/LICENSE.md",
+      "sha256": "2245a990b635558be210fb3eb4f8a6f7a49aebc0fefbf5859146a65ddc7ddcf3"
+    },
+    {
+      "path": "swift-foundation/NOTICE.txt",
+      "component": "swift-foundation",
+      "revision": "dbacc67779dc0a41ddc9493acbaa332d76c9fb03",
+      "source": "https://raw.githubusercontent.com/swiftlang/swift-foundation/dbacc67779dc0a41ddc9493acbaa332d76c9fb03/NOTICE.txt",
+      "sha256": "c2e757911b86a76230099804831d8d847a865e88b5912171627492a7a49f0456"
+    },
+    {
+      "path": "swift/LICENSE.txt",
+      "component": "swift",
+      "revision": "064859e41d68596f486c5d724401cb370f260409",
+      "source": "https://raw.githubusercontent.com/swiftlang/swift/064859e41d68596f486c5d724401cb370f260409/LICENSE.txt",
+      "sha256": "770af8291f708538d8ff885a0bbc4e045cd700531741c4f99528d435c14d7f55"
+    }
+  ]
+}

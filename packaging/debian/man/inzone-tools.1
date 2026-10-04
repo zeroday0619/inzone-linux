@@ -1,0 +1,89 @@
+.TH INZONE-TOOLS 1 "2026-10-04" "inzone-linux 0.1.0" "User Commands"
+.SH NAME
+inzone-tools \- initialize INZONE user configuration and prepare DSP assets
+.SH SYNOPSIS
+.B inzone-tools setup --assets-from
+.I DIRECTORY
+.RI [ options ]
+.br
+.B inzone-tools setup --download
+.RI [ options ]
+.br
+.B inzone-tools --help
+.SH DESCRIPTION
+.B inzone-tools
+provides package setup, asset extraction, source installation, and diagnostic
+commands. Use
+.B --help
+for the complete command reference.
+.PP
+The Debian package supplies application executables, the DSP plugin, desktop
+integration, and configuration templates. Sony DSP assets are prepared
+separately for each desktop user.
+.SH PACKAGE SETUP
+.B setup
+initializes user configuration through the existing transactional installer.
+It preserves saved profile state and does not replace a locally installed
+.B inzone-profile
+executable. The automatic profile service uses the packaged executable.
+.PP
+Setup must run as the desktop user without
+.BR sudo .
+It does not restart audio services. Apply a profile with
+.B inzone-profile
+after setup completes.
+.TP
+.BI "--assets-from " DIRECTORY
+Read an existing prepared checkout or asset cache. The directory must contain
+.B assets/
+and
+.BR analysis/payload/ .
+This mode does not download files.
+.TP
+.B --download
+Explicitly download and verify the pinned INZONE Hub installer and prepare
+its audio assets in the user cache. Extraction requires 7-Zip and .NET 10.
+The command obtains the pinned ilspycmd version when it is missing.
+Windows executables are not executed.
+.TP
+.BI "--home " DIRECTORY
+Use the specified desktop home directory. It must match the current process's
+runtime home and belong to the current user.
+.TP
+.BI "--resources " DIRECTORY
+Use configuration templates, documentation, and the DSP plugin from the
+specified package setup resource directory. The default is resolved relative
+to the installed executable.
+.PP
+Exactly one of
+.B --assets-from
+and
+.B --download
+is required. Setup never downloads assets implicitly.
+.SH FILES
+.TP
+.I /usr/share/inzone-linux/setup/
+Package setup resources.
+.TP
+.I ~/.cache/inzone-linux/setup/
+Default download and extraction cache. An absolute
+.B XDG_CACHE_HOME
+changes the cache base directory.
+.TP
+.I ~/.local/state/inzone-linux/backups/
+Backups retained when existing user configuration is replaced.
+.SH EXAMPLES
+Reuse assets from a prepared source checkout:
+.PP
+.nf
+inzone-tools setup --assets-from /path/to/inzone-linux
+.fi
+.PP
+Explicitly acquire the pinned assets:
+.PP
+.nf
+inzone-tools setup --download
+.fi
+.SH SEE ALSO
+.BR inzone-profile (1),
+.BR inzone-gui (1)

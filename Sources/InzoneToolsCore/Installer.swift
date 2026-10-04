@@ -14,13 +14,18 @@ public struct InstallOptions: Sendable {
     public let binary: URL
     public let payload: URL?
     public let expectedPluginSHA256: String
+    public let installExecutable: Bool
 
-    public init(repository: URL, home: URL, binary: URL, payload: URL? = nil, expectedPluginSHA256: String) {
+    public init(
+        repository: URL, home: URL, binary: URL, payload: URL? = nil,
+        expectedPluginSHA256: String, installExecutable: Bool = true
+    ) {
         self.repository = repository
         self.home = home
         self.binary = binary
         self.payload = payload
         self.expectedPluginSHA256 = expectedPluginSHA256
+        self.installExecutable = installExecutable
     }
 }
 
@@ -119,7 +124,8 @@ public struct Installer {
         guard let surroundTemplate = try JSONSupport.decode(Data(balancedJSON.utf8)) as? [String: Any] else {
             throw InzoneError.message("The balanced profile must contain a JSON object.")
         }
-        let pluginName = "inzone_dsp_" + String(digest.prefix(16))
+        // Package upgrades retain the unversioned system plugin path across binary replacements.
+        let pluginName = options.installExecutable ? "inzone_dsp_" + String(digest.prefix(16)) : "inzone_dsp"
 
         // Decode and validate the complete asset bank before replacing installed files.
         let preparedAssets = manager.temporaryDirectory.appendingPathComponent("inzone-install-assets-\(UUID().uuidString)")
@@ -151,7 +157,7 @@ public struct Installer {
         try validateFilterServiceEnableLink(filterEnableLink, unit: filterUnit)
         let decoder = paths.shareDirectory.appendingPathComponent("decoder")
         let backup = home.appendingPathComponent(".local/state/inzone-linux/backups/\(backupStamp())")
-        let backupPaths = [
+        var backupPaths = [
             ".config/wireplumber/wireplumber.conf.d/51-inzone-h9-ii.conf", ".local/lib/ladspa/inzone_dsp.so",
             ".local/share/inzone-linux/python", ".config/inzone-h9-ii", ".local/bin/inzone-profile",
             ".config/wireplumber/wireplumber.conf.d/52-inzone-game-chat.conf", ".config/mpv/mpv.conf",
@@ -160,6 +166,7 @@ public struct Installer {
             ".config/systemd/user/default.target.wants/inzone-filter-chain.service",
             ".config/pipewire/pipewire.conf.d/51-inzone-h9-ii-dsp.conf",
         ]
+        if !options.installExecutable { backupPaths.removeAll { $0 == ".local/bin/inzone-profile" } }
         for path in backupPaths {
             if path == ".config/inzone-h9-ii", !dataExistedBeforeLock { continue }
             let source = home.appendingPathComponent(path)
@@ -170,7 +177,7 @@ public struct Installer {
         }
         let original = data.appendingPathComponent("original.conf")
         let rollbackRoot = backup.appendingPathComponent(".installation-rollback-" + UUID().uuidString.lowercased())
-        let rollbackTargets = [
+        var rollbackTargets = [
             decoder.appendingPathComponent("inzonevirtualizer.dll"),
             data.appendingPathComponent("fps.conf"), data.appendingPathComponent("music.conf"),
             data.appendingPathComponent("voice.conf"), data.appendingPathComponent("balanced.conf"), original,
@@ -182,6 +189,7 @@ public struct Installer {
             executable, unit, filterUnit, filterEnableLink,
             home.appendingPathComponent(".config/mpv/mpv.conf"),
         ]
+        if !options.installExecutable { rollbackTargets.removeAll { $0 == executable } }
         let rollbackSnapshots = try snapshotInstallationTargets(rollbackTargets, into: rollbackRoot)
         let stagedAssets = paths.shareDirectory.appendingPathComponent(".assets-stage-\(UUID().uuidString)")
         var removeStagedAssets = true
@@ -223,8 +231,17 @@ public struct Installer {
             try copy(repository.appendingPathComponent("README.md"), to: data.appendingPathComponent("README.md"))
             try mergeDirectory(repository.appendingPathComponent("docs"), into: data.appendingPathComponent("docs"))
             // Install the validated snapshot so the source cannot change between validation and publication.
-            try write(binaryFile.data, to: executable, permissions: 0o755)
-            try copy(repository.appendingPathComponent("configs/systemd/inzone-profile-auto.service"), to: unit)
+            if options.installExecutable {
+                try write(binaryFile.data, to: executable, permissions: 0o755)
+                try copy(repository.appendingPathComponent("configs/systemd/inzone-profile-auto.service"), to: unit)
+            } else {
+                let template = try String(
+                    contentsOf: repository.appendingPathComponent("configs/systemd/inzone-profile-auto.service"),
+                    encoding: .utf8
+                )
+                let content = try Self.packagedAutomationUnit(template, executable: binary)
+                try write(Data(content.utf8), to: unit, permissions: 0o644)
+            }
             try copy(repository.appendingPathComponent("configs/systemd/inzone-filter-chain.service"), to: filterUnit)
             try enableFilterService(filterEnableLink, unit: filterUnit)
             if manager.fileExists(atPath: paths.legacyDSPProfile.path) {
@@ -273,6 +290,24 @@ public struct Installer {
                     + restorationFailures.joined(separator: " | ")
             )
         }
+    }
+
+    static func packagedAutomationUnit(_ template: String, executable: URL) throws -> String {
+        let path = executable.path
+        guard path.hasPrefix("/"), !path.contains("\n"), !path.contains("\r"), !path.contains("\0") else {
+            throw InzoneError.message("The packaged executable requires an absolute path without control characters.")
+        }
+        let escaped = path.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+            .replacingOccurrences(of: "%", with: "%%")
+        var lines = template.components(separatedBy: .newlines)
+        let commands = lines.indices.filter { lines[$0].hasPrefix("ExecStart=") }
+        guard commands.count == 1, let index = commands.first else {
+            throw InzoneError.message("The automation service must contain exactly one ExecStart command.")
+        }
+        // The colon prefix preserves literal dollar signs in installation paths.
+        lines[index] = "ExecStart=:\"\(escaped)\" --auto-watch"
+        return lines.joined(separator: "\n")
     }
 
     private func isFile(_ path: URL) -> Bool {
@@ -590,8 +625,12 @@ public struct Installer {
     }
 
     private func validatedHome(effectiveUserID: uid_t) throws -> URL {
-        let canonicalHome = options.home.standardizedFileURL.resolvingSymlinksInPath()
-        let runtimeHome = runtimeHomeProvider().standardizedFileURL.resolvingSymlinksInPath()
+        try Self.validatedHome(options.home, runtimeHome: runtimeHomeProvider(), effectiveUserID: effectiveUserID)
+    }
+
+    static func validatedHome(_ home: URL, runtimeHome: URL, effectiveUserID: uid_t) throws -> URL {
+        let canonicalHome = home.standardizedFileURL.resolvingSymlinksInPath()
+        let runtimeHome = runtimeHome.standardizedFileURL.resolvingSymlinksInPath()
         guard canonicalHome == runtimeHome else {
             throw InzoneError.message(
                 "INSTALL_HOME must match the desktop user's runtime HOME so the FIR plugin loads the validated asset bank."

@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>dev.zeroday0619.InzoneControl</id>
+  <metadata_license>MIT</metadata_license>
+  <project_license>MIT</project_license>
+  <name>INZONE Control</name>
+  <summary>Manage INZONE headset audio profiles and device settings</summary>
+  <description>
+    <p>Control Sony INZONE H9 II audio profiles, equalizer settings, microphone levels, and headset options on Linux.</p>
+    <p>The Qt desktop interface supports native Wayland and process-based automatic profile switching. Sony DSP assets are initialized separately by the desktop user.</p>
+  </description>
+  <developer id="dev.zeroday0619">
+    <name>Euiseo Cha</name>
+  </developer>
+  <launchable type="desktop-id">dev.zeroday0619.desktop</launchable>
+  <url type="homepage">https://github.com/zeroday0619/inzone-linux</url>
+  <provides>
+    <binary>inzone-gui</binary>
+    <modalias>usb:v054Cp0FA8d*</modalias>
+  </provides>
+  <categories>
+    <category>AudioVideo</category>
+    <category>Audio</category>
+  </categories>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.1.0" date="2026-10-04"/>
+  </releases>
+</component>

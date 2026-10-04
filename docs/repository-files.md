@@ -22,7 +22,7 @@ uses them only through a local static-analysis pipeline:
 
 | Category | Tracked in Git (Public) | Local Machine Only (Git Excluded) |
 |---|---|---|
-| **Build & Packaging** | • Top-level `Makefile`, `CMakeLists.txt`, `CMakePresets.json`<br>• `native/Makefile`, `native/exports.map`<br>• `Package.swift`, `Package.resolved` | • Swift build caches (`.build/`, `.swiftpm/`)<br>• CMake build trees (`build/`)<br>• Compilation temporaries (`*.o`, `*.tmp`)<br>• External download caches |
+| **Build & Packaging** | • Top-level `Makefile`, `CMakeLists.txt`, `CMakePresets.json`<br>• `.github/workflows/`, `scripts/ci/`, `cmake/`, `packaging/`, and Debian build scripts<br>• `native/Makefile`, `native/exports.map`<br>• `Package.swift`, `Package.resolved` | • Swift build caches (`.build/`, `.swiftpm/`)<br>• CMake build trees and Debian artifacts (`build/`, `*.deb`)<br>• Compilation temporaries (`*.o`, `*.tmp`)<br>• External download caches |
 | **Source Code** | • `Sources/` (CLI, TUI, Qt GUI, D-Bus service, HID control, parsers)<br>• `Sources/InzoneDSP/` (LADSPA DSP implementation)<br>• `Sources/CLADSPA/` (C ABI system module headers) | • Built executables (`inzone-profile`, `inzone-tools`, `inzone-gui`, `inzone-service`)<br>• Compiled DSP library (`native/inzone_dsp.so`) |
 | **System Configuration** | • `configs/` (WirePlumber templates and dedicated PipeWire filter-chain base configuration)<br>• `configs/systemd/` (User service units)<br>• `configs/dbus/` (Session bus activation)<br>• `gui/` (QML, desktop entry, and SVG icon)<br>• `configs/udev/` (`70-inzone-h9-ii.rules`) | • User runtime configurations (`~/.config/inzone-h9-ii/`)<br>• Active WirePlumber session state files |
 | **Development Tools** | • `Sources/InzoneTools/` (Developer/asset CLI)<br>• `Sources/InzoneToolsCore/` (Extraction/install/diagnostic core) | • Local ILSpy decompiler (`tools/ilspycmd`)<br>• `.dotnet/`, `.nuget/`, `tools/.store/` |
@@ -56,6 +56,8 @@ flowchart TD
 - **`make native-build`**: Compiles `Sources/InzoneDSP/` in Embedded Swift mode to generate the high-performance, lightweight LADSPA plugin `native/inzone_dsp.so`.
 - **`make swift-build`**: Builds release binaries for `inzone-profile` and `inzone-tools` with a statically linked Swift standard library.
 - **`make check` (or `make test`)**: Runs unit tests, regression suites, and installation safety tests.
+- **`make deb`**: Builds the complete Debian binary package with private Swift runtime libraries. Sony assets and desktop-user setup remain separate. See [Debian packaging](debian.md).
+- **Debian packages workflow**: Builds and verifies `trixie` and `forky` amd64 packages on GitHub Actions. See [CI documentation](ci.md).
 - **`make help`**: Prints all available targets and configuration variables.
 
 A user-supplied `--ilspycmd` must be a regular host ELF64 x86-64 executable with

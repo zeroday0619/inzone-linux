@@ -1,6 +1,9 @@
 #include "InzoneGuiRuntime.h"
 
 #include <QCoreApplication>
+#include <QDir>
+#include <QFileInfo>
+#include <QFile>
 #include <QGuiApplication>
 #include <QIcon>
 #include <QImage>
@@ -142,6 +145,15 @@ extern "C" void inzone_gui_configure(bool smoke_test, const char *screenshot_pat
                                      const char *diagnostics_path, bool platform_argument)
 {
     initializeResources();
+    // A private Qt SDK must load matching QML and platform plugins instead of the desktop's Qt version.
+    const QDir executableDirectory(QFileInfo(QFileInfo(QStringLiteral("/proc/self/exe")).canonicalFilePath()).absolutePath());
+    const QString privateQt = executableDirectory.filePath(QStringLiteral("../lib/inzone-linux/qt"));
+    if (QFileInfo::exists(privateQt + QStringLiteral("/plugins/platforms"))) {
+        qputenv("QT_PLUGIN_PATH", QFile::encodeName(privateQt + QStringLiteral("/plugins")));
+        qputenv("QML_IMPORT_PATH", QFile::encodeName(privateQt + QStringLiteral("/qml")));
+        qputenv("QML2_IMPORT_PATH", QFile::encodeName(privateQt + QStringLiteral("/qml")));
+        qputenv("QT_QUICK_CONTROLS_STYLE", "Basic");
+    }
     smokeTest = smoke_test;
     screenshotPath = QString::fromUtf8(screenshot_path);
     diagnosticsPath = QString::fromUtf8(diagnostics_path);

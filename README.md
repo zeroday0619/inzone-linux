@@ -98,6 +98,25 @@ The Sony spatial audio stack is now active.
 
 ---
 
+## Debian packages
+
+Build a complete Debian package for the current distribution with:
+
+```sh
+make deb SWIFT=/path/to/swift/toolchain/usr/bin/swift
+```
+
+The package includes the GUI, CLI, D-Bus service, DSP plugin, and private Swift
+runtime. Debian 13 builds also bundle a compatible Qt runtime. Sony assets are
+prepared separately with `inzone-tools setup`; package installation does not
+download assets or restart audio. See [Debian packaging](docs/debian.md) for
+build requirements, installation, user setup, and verification.
+
+GitHub Actions builds and verifies amd64 packages for Debian 13 (`trixie`) and
+`forky` on every push and pull request. Both CI variants bundle Qt 6.11.2.
+Download the package and checksums from the successful **Debian packages** run;
+[CI documentation](docs/ci.md) describes the matrix, artifacts, and manual runs.
+
 ## Qt Desktop Interface
 
 The desktop uses Swift application logic, Qt Quick 6.10 or later, and the pinned

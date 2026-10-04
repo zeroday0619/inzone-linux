@@ -1,0 +1,32 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: inzone-linux
+Upstream-Contact: Euiseo Cha <escha@zeroday0619.dev>
+Source: https://github.com/zeroday0619/inzone-linux
+
+Files: *
+Copyright: 2026 Euiseo Cha
+License: MIT
+ See LICENSE.inzone-linux for the complete license text.
+
+Files: embedded QtBridge code
+Copyright: 2025-2026 The Qt Company Ltd.
+License: LGPL-3.0-only and GPL-3.0-only
+ QtBridge uses per-file license identifiers. Some compiled bridge files use
+ GPL-3.0-only and others LGPL-3.0-only, with a commercial license alternative.
+ The package includes the corresponding bridge source in source.tar.xz and
+ the upstream license texts in licenses/qtbridge. On Debian systems, the full
+ GPL version 3 and LGPL version 3 texts are also available in
+ /usr/share/common-licenses/GPL-3 and /usr/share/common-licenses/LGPL-3.
+ The project source license
+ remains MIT; it does not replace the bridge's distribution conditions.
+
+Files: /usr/lib/inzone-linux/swift/*
+Copyright: The Swift Project Authors and third-party contributors
+License: Apache-2.0-with-runtime-exception and other
+ See licenses/swift for the toolchain license and available third-party notices.
+
+Files: /usr/lib/inzone-linux/qt/*
+Copyright: The Qt Company Ltd. and contributors
+License: LGPL-3.0-only and other
+ This optional directory is included only in builds with a bundled Qt SDK.
+ Consult licenses/qt and the matching Qt source distribution for per-file terms.

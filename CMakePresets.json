@@ -10,12 +10,45 @@
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_INSTALL_PREFIX": "$env{HOME}/.local"
       }
+    },
+    {
+      "name": "debian",
+      "displayName": "Debian binary package",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/debian",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_INSTALL_PREFIX": "/usr",
+        "INZONE_DEBIAN_PACKAGE": "ON"
+      }
     }
   ],
   "buildPresets": [
-    { "name": "gui", "configurePreset": "gui" }
+    {
+      "name": "gui",
+      "configurePreset": "gui"
+    },
+    {
+      "name": "debian",
+      "configurePreset": "debian"
+    }
   ],
   "testPresets": [
-    { "name": "gui", "configurePreset": "gui", "output": { "outputOnFailure": true } }
+    {
+      "name": "gui",
+      "configurePreset": "gui",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ],
+  "packagePresets": [
+    {
+      "name": "debian",
+      "configurePreset": "debian",
+      "generators": [
+        "DEB"
+      ]
+    }
   ]
 }

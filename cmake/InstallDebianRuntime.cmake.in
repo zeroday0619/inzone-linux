@@ -1,0 +1,22 @@
+set(staging_root "$ENV{DESTDIR}")
+if(staging_root STREQUAL "")
+    message(FATAL_ERROR "Package installation requires DESTDIR; direct installation of bundled runtimes is disabled.")
+endif()
+file(MAKE_DIRECTORY "${staging_root}/usr/share/inzone-linux/setup/native")
+file(CREATE_LINK "../../../../lib/ladspa/inzone_dsp.so"
+    "${staging_root}/usr/share/inzone-linux/setup/native/inzone_dsp.so" SYMBOLIC)
+set(runtime_arguments --staging-root "${staging_root}" --swift-runtime "@INZONE_SWIFT_RUNTIME_DIRECTORY@")
+if(NOT "@INZONE_BUNDLED_QT_PREFIX@" STREQUAL "")
+    list(APPEND runtime_arguments --qt-prefix "@INZONE_BUNDLED_QT_PREFIX@")
+endif()
+execute_process(COMMAND "@Python3_EXECUTABLE@" "@CMAKE_SOURCE_DIR@/scripts/package-runtime.py" ${runtime_arguments}
+    COMMAND_ERROR_IS_FATAL ANY)
+execute_process(COMMAND "@Python3_EXECUTABLE@" "@CMAKE_SOURCE_DIR@/scripts/package-sources.py"
+    --repository "@CMAKE_SOURCE_DIR@" --qtbridge "@qtbridge_SOURCE_DIR@"
+    --swift-checkouts "@INZONE_SWIFTPM_SCRATCH_PATH@/checkouts"
+    --output "${staging_root}/usr/share/doc/inzone-linux/source.tar.xz"
+    COMMAND_ERROR_IS_FATAL ANY)
+
+execute_process(COMMAND "@Python3_EXECUTABLE@" "@CMAKE_SOURCE_DIR@/scripts/finalize-debian.py"
+    --staging-root "${staging_root}" --version "@PROJECT_VERSION@-@INZONE_DEBIAN_RELEASE@"
+    COMMAND_ERROR_IS_FATAL ANY)

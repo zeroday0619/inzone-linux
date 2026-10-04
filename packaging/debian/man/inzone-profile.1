@@ -1,0 +1,101 @@
+.TH INZONE-PROFILE 1 "2026-10-04" "inzone-linux 0.1.0" "User Commands"
+.SH NAME
+inzone-profile \- manage INZONE audio profiles and headset controls
+.SH SYNOPSIS
+.B inzone-profile
+.RI [ command ]
+.SH DESCRIPTION
+.B inzone-profile
+opens the terminal interface when invoked without arguments in an interactive
+terminal. Commands can select an audio profile, adjust DSP settings, inspect
+headset state, and configure process-based automatic profile switching.
+.PP
+Run this command as the desktop user. Profile activation updates user audio
+configuration and applies the requested routing and DSP settings.
+.SH COMMANDS
+.TP
+.B --help, -h, --list
+Print the complete command and option reference.
+.TP
+.B --tui
+Open the terminal interface.
+.TP
+.B --gui
+Launch the Qt desktop interface.
+.TP
+.B fps, music, voice, balanced, surround
+Activate the named built-in profile. A custom profile identifier can also be
+supplied as the command.
+.TP
+.B restore
+Restore the original audio configuration saved by user setup.
+.TP
+.B --status
+Print the active profile identifier.
+.TP
+.B --profiles
+List built-in and custom profiles.
+.TP
+.B --settings
+Print saved DSP settings.
+.TP
+.BI "--set " "PROFILE KEY JSON_VALUE"
+Change and apply a DSP option. Supported keys include
+.BR drc ,
+.BR output_alc ,
+.BR mic_agc ,
+.BR hrtf ,
+.BR eq ,
+.BR eq_enable ,
+.BR sound_mode ,
+and
+.BR base_eq .
+Boolean options use JSON
+.B true
+or
+.BR false .
+.TP
+.B --device-status
+Read headset state, including available firmware version information.
+.TP
+.BI "--device-set " "FIELD VALUE"
+Set a supported headset field and verify its readback.
+.TP
+.B --auto-config
+Print application profile association rules.
+.TP
+.BI "--auto-bind " "APP PROFILE " [ PRIORITY ]
+Add or replace a process-based profile association.
+.TP
+.BI "--auto-remove " APP
+Remove an application association.
+.TP
+.B --auto-enable, --auto-disable
+Enable or disable automatic switching through the user service.
+.TP
+.B --auto-watch
+Run the process association watcher in the foreground. The user service uses
+this command for background automatic switching.
+.TP
+.B --debug
+Enable command and DSP verification logging. This flag can accompany another
+command.
+.SH FILES
+.TP
+.I ~/.config/inzone-h9-ii/
+User profile, DSP, and automation configuration.
+.TP
+.I ~/.local/share/inzone-linux/
+Separately acquired DSP assets and personal filter data.
+.TP
+.I ~/.local/state/inzone-linux/debug.log
+Diagnostic log when debug mode is enabled.
+.SH SETUP
+Use
+.BR inzone-tools (1)
+to initialize the desktop user's configuration before the first profile switch.
+Firmware update operations are not provided.
+.SH SEE ALSO
+.BR inzone-gui (1),
+.BR inzone-tools (1),
+.BR systemctl (1)

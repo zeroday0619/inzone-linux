@@ -79,3 +79,9 @@
 
 # Python integration-test bytecode.
 __pycache__/
+
+# Debian binary packages and source archives.
+*.deb
+*.ddeb
+*.changes
+*.buildinfo
