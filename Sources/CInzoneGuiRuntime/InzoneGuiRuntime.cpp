@@ -74,6 +74,7 @@ void writeDiagnostics(QQuickWindow *window)
         {QStringLiteral("nativeWayland"), QGuiApplication::platformName().startsWith(QStringLiteral("wayland"))},
         {QStringLiteral("desktopFileName"), QGuiApplication::desktopFileName()},
         {QStringLiteral("applicationName"), QCoreApplication::applicationName()},
+        {QStringLiteral("applicationVersion"), QCoreApplication::applicationVersion()},
         {QStringLiteral("applicationDisplayName"), QGuiApplication::applicationDisplayName()},
         {QStringLiteral("organizationName"), QCoreApplication::organizationName()},
         {QStringLiteral("organizationDomain"), QCoreApplication::organizationDomain()},
@@ -160,6 +161,7 @@ extern "C" void inzone_gui_configure(bool smoke_test, const char *screenshot_pat
 
     // QtBridge creates QGuiApplication after the Swift QApp initializer returns.
     QCoreApplication::setApplicationName(QStringLiteral("dev.zeroday0619"));
+    QCoreApplication::setApplicationVersion(QStringLiteral(INZONE_APPLICATION_VERSION));
     QGuiApplication::setApplicationDisplayName(QStringLiteral("INZONE Control"));
     QGuiApplication::setDesktopFileName(QStringLiteral("dev.zeroday0619"));
 

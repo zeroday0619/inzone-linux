@@ -93,9 +93,32 @@ sd-bus library.
 - Unavailable device fields stay disabled. Errors remain visible until dismissed
   or superseded by another operation. Firmware versions are read-only.
 
-`Ctrl+1` through `Ctrl+4` select the four pages. `Ctrl+R` refreshes status.
+`Ctrl+1` through `Ctrl+5` select Sound, Microphone, Headset, App profiles, and
+About, respectively. `Ctrl+R` refreshes status.
 Status refreshes every five seconds when no D-Bus request is pending. Changes
 made by the CLI or automatic profile watcher appear in the next refresh.
+
+### View application information
+
+Open **About** or press `Ctrl+5` to view the application version, developer name
+and email address, and MIT license information. The version comes from the CMake
+project version used to build the executable. About remains available when the
+D-Bus service or headset is unavailable and while a settings request is pending.
+
+The developer profile, project repository, issue tracker, and license buttons
+open their addresses in the default browser when activated. Viewing About does
+not change headset or audio settings. The developer email address is selectable
+for copying.
+
+Select **Dependencies and licenses** in About to open the dependency list. Each
+entry identifies the component, version, license, and source address. Select
+**License** to read the included license text and notices offline.
+Source buttons open the component's website in the default browser.
+
+The [MIT license](../LICENSE) applies to the project's original source code.
+Dependencies retain their own license terms. The pinned `swift-terminal` 0.0.2
+[source snapshot](../Vendor/swift-terminal/UPSTREAM.md) contains no license
+declaration, so the list marks its license as unavailable.
 
 ### Presentation and accessibility
 

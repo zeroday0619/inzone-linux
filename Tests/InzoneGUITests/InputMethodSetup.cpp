@@ -53,6 +53,7 @@ class InputMethodSetup : public QObject
 public slots:
     void qmlEngineAvailable(QQmlEngine *engine)
     {
+        QCoreApplication::setApplicationVersion(QStringLiteral(INZONE_APPLICATION_VERSION));
         engine->rootContext()->setContextProperty(QStringLiteral("inputMethodProbe"), &probe);
     }
 

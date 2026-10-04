@@ -28,6 +28,10 @@ Canvas {
         } else if (kind === "headset") {
             context.moveTo(4, 13); context.lineTo(4, 11); context.arc(12, 11, 8, Math.PI, 0, false); context.lineTo(20, 17);
             context.roundedRect(3, 12, 5, 8, 2, 2); context.roundedRect(16, 12, 5, 8, 2, 2);
+        } else if (kind === "info") {
+            context.arc(12, 12, 9, 0, Math.PI * 2);
+            context.moveTo(12, 10.5); context.lineTo(12, 17);
+            context.moveTo(12, 7); context.lineTo(12, 7.2);
         } else if (kind === "apps") {
             context.roundedRect(3, 3, 7, 7, 1.5, 1.5); context.roundedRect(14, 3, 7, 7, 1.5, 1.5);
             context.roundedRect(3, 14, 7, 7, 1.5, 1.5); context.roundedRect(14, 14, 7, 7, 1.5, 1.5);

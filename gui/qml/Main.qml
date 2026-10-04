@@ -23,6 +23,7 @@ ApplicationWindow {
         ? Math.min(height, Qt.inputMethod.keyboardRectangle.y) : height
     readonly property real keyboardInset: Math.max(0, height - usableDialogHeight)
     property int currentPage: 0
+    readonly property bool showingAbout: currentPage === 4
     property string selectedProfileId: ""
     property var state: parseState(backend.stateJSON)
     readonly property var profiles: state.profiles || []
@@ -37,7 +38,8 @@ ApplicationWindow {
         {title: "Sound", subtitle: "Shape the way you listen.", icon: "sound"},
         {title: "Microphone", subtitle: "Make every conversation clear.", icon: "microphone"},
         {title: "Headset", subtitle: "Set up your INZONE H9 II.", icon: "headset"},
-        {title: "App profiles", subtitle: "The right sound for each application.", icon: "apps"}
+        {title: "App profiles", subtitle: "The right sound for each application.", icon: "apps"},
+        {title: "About", subtitle: "Application and developer information.", icon: "info"}
     ]
     property QtObject theme: QtObject {
         readonly property color background: darkMode ? "#202020" : "#f5f5f5"
@@ -150,6 +152,7 @@ ApplicationWindow {
     Shortcut { sequence: "Ctrl+2"; onActivated: currentPage = 1 }
     Shortcut { sequence: "Ctrl+3"; onActivated: currentPage = 2 }
     Shortcut { sequence: "Ctrl+4"; onActivated: currentPage = 3 }
+    Shortcut { sequence: "Ctrl+5"; onActivated: currentPage = 4 }
 
     RowLayout {
         objectName: "guiRoot"
@@ -165,14 +168,14 @@ ApplicationWindow {
                 anchors.margins: window.compactNavigation ? 8 : 16
                 spacing: 8
                 RowLayout {
-                    Layout.topMargin: 16
-                    Layout.bottomMargin: 32
+                    Layout.topMargin: window.compactNavigation ? 0 : 16
+                    Layout.bottomMargin: window.compactNavigation ? 0 : 32
                     Layout.leftMargin: 12
                     spacing: 12
                     LineIcon { kind: "headset"; strokeColor: theme.accentText; Layout.preferredWidth: 28; Layout.preferredHeight: 28 }
                     Text { textFormat: Text.PlainText; visible: !window.compactNavigation; text: "INZONE"; color: theme.text; font.pixelSize: 22; font.weight: Font.DemiBold; font.letterSpacing: 1.5 }
                 }
-                Text { textFormat: Text.PlainText; visible: !window.compactNavigation; text: "YOUR AUDIO"; color: theme.secondaryText; font.pixelSize: 10; font.weight: Font.DemiBold; font.letterSpacing: 1.2; Layout.leftMargin: 12; Layout.bottomMargin: 8 }
+                Text { textFormat: Text.PlainText; visible: !window.compactNavigation; text: "INZONE CONTROL"; color: theme.secondaryText; font.pixelSize: 10; font.weight: Font.DemiBold; font.letterSpacing: 1.2; Layout.leftMargin: 12; Layout.bottomMargin: 8 }
                 Repeater {
                     model: window.pages
                     delegate: Button {
@@ -229,9 +232,9 @@ ApplicationWindow {
                     Text { textFormat: Text.PlainText; visible: window.width >= 720; text: window.pages[currentPage].subtitle; color: theme.secondaryText; font.pixelSize: 14; Layout.fillWidth: true }
                 }
                 ActionButton { theme: window.theme; text: darkMode ? "Light theme" : "Dark theme"; subtle: true; onClicked: darkMode = !darkMode }
-                ActionButton { theme: window.theme; text: "Refresh"; enabled: !backend.busy; onClicked: backend.refresh(); ToolTip.text: "Refresh status (Ctrl+R)"; ToolTip.visible: hovered }
+                ActionButton { objectName: "refreshButton"; theme: window.theme; text: "Refresh"; visible: !window.showingAbout; enabled: !backend.busy; onClicked: backend.refresh(); ToolTip.text: "Refresh status (Ctrl+R)"; ToolTip.visible: hovered }
             }
-            ProgressBar { Layout.fillWidth: true; implicitHeight: 3; indeterminate: true; visible: backend.busy }
+            ProgressBar { Layout.fillWidth: true; implicitHeight: 3; indeterminate: true; visible: backend.busy && !window.showingAbout }
             ScrollView {
                 id: contentScroll
                 objectName: "contentScroll"
@@ -247,14 +250,15 @@ ApplicationWindow {
                     Rectangle {
                         Layout.fillWidth: true
                         implicitHeight: connectionLabel.implicitHeight + 32
-                        visible: !backend.connected
+                        objectName: "connectionWarning"
+                        visible: !backend.connected && !window.showingAbout
                         radius: 6; color: theme.errorSurface; border.color: theme.border
                         Text { textFormat: Text.PlainText; id: connectionLabel; anchors.fill: parent; anchors.margins: 16; text: "The INZONE service is unavailable. Start the user service, then select Refresh."; color: theme.danger; font.pixelSize: 13; wrapMode: Text.WordWrap }
                     }
                     Rectangle {
                         Layout.fillWidth: true
                         implicitHeight: messageLayout.implicitHeight + 24
-                        visible: backend.errorMessage.length > 0 || backend.notice.length > 0
+                        visible: !window.showingAbout && (backend.errorMessage.length > 0 || backend.notice.length > 0)
                         radius: 6; color: backend.errorMessage.length ? theme.errorSurface : theme.accentSurface; border.color: theme.border
                         RowLayout {
                             id: messageLayout
@@ -264,6 +268,8 @@ ApplicationWindow {
                         }
                     }
                     Surface {
+                        objectName: "headsetSummary"
+                        visible: !window.showingAbout
                         theme: window.theme
                         Layout.fillWidth: true
                         padding: 20
@@ -283,17 +289,18 @@ ApplicationWindow {
                             }
                         }
                     }
-                    Text { textFormat: Text.PlainText; text: window.state.device_error || ""; visible: text.length > 0 && currentPage !== 3; Layout.fillWidth: true; color: theme.secondaryText; font.pixelSize: 12; wrapMode: Text.WordWrap }
+                    Text { textFormat: Text.PlainText; text: window.state.device_error || ""; visible: text.length > 0 && currentPage < 3; Layout.fillWidth: true; color: theme.secondaryText; font.pixelSize: 12; wrapMode: Text.WordWrap }
                     Text { textFormat: Text.PlainText; text: window.state.audio_error || ""; visible: text.length > 0 && currentPage < 2; Layout.fillWidth: true; color: theme.danger; font.pixelSize: 12; wrapMode: Text.WordWrap }
                     Text { textFormat: Text.PlainText; text: window.state.profile_error || ""; visible: text.length > 0 && currentPage < 2; Layout.fillWidth: true; color: theme.danger; font.pixelSize: 12; wrapMode: Text.WordWrap }
                     SoundPage { app: window; Layout.fillWidth: true; visible: currentPage === 0 }
                     MicrophonePage { app: window; Layout.fillWidth: true; visible: currentPage === 1 }
                     HeadsetPage { app: window; Layout.fillWidth: true; visible: currentPage === 2 }
                     ApplicationsPage { app: window; Layout.fillWidth: true; visible: currentPage === 3 }
+                    AboutPage { app: window; Layout.fillWidth: true; visible: window.showingAbout }
                     Item { Layout.preferredHeight: 16 + window.keyboardInset }
                 }
             }
-            Text { textFormat: Text.PlainText; text: backend.busy ? "Applying changes…" : "Changes are verified by the INZONE service."; color: theme.secondaryText; font.pixelSize: 11; Layout.leftMargin: window.pageMargin; Layout.topMargin: 12; Layout.bottomMargin: 12 }
+            Text { textFormat: Text.PlainText; text: window.showingAbout ? "INZONE Linux · Community-developed headset control" : backend.busy ? "Applying changes…" : "Changes are verified by the INZONE service."; color: theme.secondaryText; font.pixelSize: 11; Layout.leftMargin: window.pageMargin; Layout.topMargin: 12; Layout.bottomMargin: 12 }
         }
     }
 

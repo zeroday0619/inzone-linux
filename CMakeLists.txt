@@ -47,6 +47,7 @@ target_link_libraries(InzoneDBus PUBLIC PkgConfig::SYSTEMD)
 
 add_library(InzoneGuiRuntime STATIC Sources/CInzoneGuiRuntime/InzoneGuiRuntime.cpp)
 target_include_directories(InzoneGuiRuntime PUBLIC Sources/CInzoneGuiRuntime/include)
+target_compile_definitions(InzoneGuiRuntime PRIVATE INZONE_APPLICATION_VERSION="${PROJECT_VERSION}")
 target_link_libraries(InzoneGuiRuntime PRIVATE Qt6::Core Qt6::Gui Qt6::Quick)
 qt_add_resources(InzoneGuiRuntime inzone_icons
     PREFIX "/inzone"
@@ -134,6 +135,7 @@ if(BUILD_TESTING)
         AUTOMOC ON
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
     )
+    target_compile_definitions(inzone-gui-tests PRIVATE INZONE_APPLICATION_VERSION="${PROJECT_VERSION}")
     target_link_libraries(inzone-gui-tests PRIVATE Qt6::QuickTest Qt6::Test Qt6::Quick Qt6::Qml Qt6::Gui)
 
     # The integration fixture loads the same C client API used by the Swift GUI.

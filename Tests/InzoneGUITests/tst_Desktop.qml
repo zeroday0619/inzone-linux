@@ -65,8 +65,25 @@ TestCase {
         desktop = null;
         wait(0);
     }
+    function findVisualChild(item, name) {
+        if (item.objectName === name)
+            return item;
+        for (var child of item.children) {
+            var result = findVisualChild(child, name);
+            if (result !== null)
+                return result;
+        }
+        return null;
+    }
     function control(name) {
         var result = findChild(desktop, name);
+        // Repeater delegates can have a different QObject owner from their visual parent.
+        if (result === null)
+            result = findVisualChild(desktop.contentItem, name);
+        // Popup delegates belong to the overlay visual tree instead of the page content.
+        var dialog = findChild(desktop, "dependenciesDialog");
+        if (result === null && dialog !== null)
+            result = findVisualChild(dialog.parent, name);
         verify(result !== null, "Missing control: " + name);
         return result;
     }
@@ -79,12 +96,216 @@ TestCase {
             return position.y >= 0 && position.y + item.height <= viewport.height;
         });
     }
+    function openDependenciesDialog() {
+        keyClick(Qt.Key_5, Qt.ControlModifier);
+        tryCompare(desktop, "currentPage", 4);
+        verify(waitForRendering(desktop.contentItem));
+        var button = control("aboutDependenciesButton");
+        revealControl(button);
+        verify(waitForRendering(desktop.contentItem));
+        verify(button.enabled);
+        mouseClick(button);
+        var dialog = control("dependenciesDialog");
+        tryCompare(dialog, "visible", true);
+        tryCompare(control("dependencyFilter"), "activeFocus", true);
+        return dialog;
+    }
+    function verifyDialogFitsWindow(dialog) {
+        verify(dialog.width > 0 && dialog.height > 0);
+        verify(dialog.x >= 0 && dialog.x + dialog.width <= desktop.width);
+        verify(dialog.y >= 0 && dialog.y + dialog.height <= desktop.height);
+    }
     function test_initialStateDoesNotMutate() {
         compare(desktop.selectedProfileId, "balanced");
         compare(control("profileSelector").currentIndex, 0);
         compare(mockBackend.calls.length, 0);
         mockBackend.stateJSON = JSON.stringify(fixture());
         wait(30);
+        compare(mockBackend.calls.length, 0);
+    }
+    function test_aboutNavigationRemainsAvailableWithoutService() {
+        var state = fixture();
+        state.device.connected = false;
+        state.device_error = "Headset unavailable.";
+        state.audio_error = "Audio service unavailable.";
+        state.profile_error = "Profile state unavailable.";
+        mockBackend.stateJSON = JSON.stringify(state);
+        mockBackend.connected = false;
+        mockBackend.busy = true;
+        mockBackend.errorMessage = "D-Bus request failed.";
+        verify(control("connectionWarning").visible);
+
+        var navigation = control("navigation4");
+        verify(navigation.enabled);
+        mouseClick(navigation);
+        tryCompare(desktop, "currentPage", 4);
+        verify(control("aboutPage").visible);
+        verify(!control("connectionWarning").visible);
+        verify(!control("headsetSummary").visible);
+        verify(!control("refreshButton").visible);
+        compare(control("applicationNameLabel").text, "INZONE Control");
+        verify(Qt.application.version.length > 0, "The test runner must provide the application version.");
+        compare(control("applicationVersionLabel").text, "Version " + Qt.application.version);
+        compare(control("developerNameLabel").text, "Euiseo Cha");
+        compare(control("developerEmailLabel").text, "escha@zeroday0619.dev");
+        verify(control("developerEmailLabel").readOnly);
+        verify(control("licenseLabel").text.indexOf("MIT License") === 0);
+        for (var name of ["projectWebsiteButton", "reportIssueButton", "licenseButton", "aboutDependenciesButton"])
+            verify(control(name).enabled);
+
+        keyClick(Qt.Key_1, Qt.ControlModifier);
+        tryCompare(desktop, "currentPage", 0);
+        verify(control("connectionWarning").visible);
+        verify(!control("aboutPage").visible);
+        keyClick(Qt.Key_5, Qt.ControlModifier);
+        tryCompare(desktop, "currentPage", 4);
+        verify(control("aboutPage").visible);
+        compare(mockBackend.calls.length, 0);
+        compare(mockBackend.errorMessage, "D-Bus request failed.");
+    }
+    function test_aboutLinksFitCompactViewport_data() {
+        return [{tag: "light", darkMode: false}, {tag: "dark", darkMode: true}];
+    }
+    function test_aboutLinksFitCompactViewport(data) {
+        desktop.showNormal();
+        tryCompare(desktop, "visibility", Window.Windowed);
+        verify(waitForRendering(desktop.contentItem));
+        desktop.width = 640;
+        desktop.height = 360;
+        desktop.darkMode = data.darkMode;
+        tryCompare(desktop, "width", 640);
+        tryCompare(desktop, "height", 360);
+        verify(waitForRendering(desktop.contentItem));
+
+        var navigation = control("navigation4");
+        var navigationPosition = navigation.mapToItem(desktop.contentItem, 0, 0);
+        verify(navigationPosition.y >= 0 && navigationPosition.y + navigation.height <= desktop.height,
+               "About navigation must fit inside the compact window.");
+        mouseClick(navigation);
+        tryCompare(desktop, "currentPage", 4);
+        var page = control("aboutPage");
+        verify(waitForRendering(page));
+        var scroll = control("contentScroll");
+        var pagePosition = page.mapToItem(scroll.contentItem, 0, 0);
+        verify(pagePosition.x >= 0 && pagePosition.x + page.width <= scroll.width);
+        for (var name of ["applicationNameLabel", "applicationVersionLabel", "developerNameLabel",
+                          "developerEmailLabel", "licenseLabel"]) {
+            var label = control(name);
+            var textWidth = name === "developerEmailLabel" ? label.contentWidth : label.paintedWidth;
+            verify(textWidth <= label.width + 1, name + " must wrap within its available width.");
+        }
+        for (var name of ["projectWebsiteButton", "reportIssueButton", "licenseButton", "aboutDependenciesButton"]) {
+            var button = control(name);
+            verify(button.enabled);
+            verify(button.activeFocusOnTab);
+            button.forceActiveFocus(Qt.TabFocusReason);
+            tryCompare(button, "activeFocus", true);
+            tryVerify(function() {
+                var position = button.mapToItem(scroll.contentItem, 0, 0);
+                return position.x >= 0 && position.x + button.width <= scroll.width &&
+                       position.y >= 0 && position.y + button.height <= scroll.height;
+            }, 5000, name + " must scroll into view when focused.");
+        }
+        compare(mockBackend.calls.length, 0);
+        compare(page.linkError, "");
+    }
+    function test_dependencyLicensesRemainAvailableWithoutService() {
+        mockBackend.connected = false;
+        mockBackend.busy = true;
+        mockBackend.errorMessage = "D-Bus request failed.";
+        var dialog = openDependenciesDialog();
+        var list = control("dependenciesList");
+        var bridgeIndex = dialog.components.findIndex(function(component) { return component.id === "qtbridge"; });
+        verify(bridgeIndex >= 0, "The catalog must include the linked Qt Bridge component.");
+        list.positionViewAtIndex(bridgeIndex, ListView.Beginning);
+        tryVerify(function() { return findVisualChild(list, "dependencyLicense-qtbridge") !== null; });
+        var button = control("dependencyLicense-qtbridge");
+        button.forceActiveFocus(Qt.TabFocusReason);
+        tryCompare(button, "activeFocus", true);
+        mouseClick(button);
+        var licenseDialog = control("dependencyLicenseDialog");
+        tryCompare(licenseDialog, "visible", true);
+        compare(licenseDialog.component.id, "qtbridge");
+        var licenseText = control("dependencyLicenseText");
+        verify(licenseText.readOnly);
+        verify(licenseText.text.indexOf("GNU GENERAL PUBLIC LICENSE") >= 0);
+        verify(licenseText.text.indexOf("GNU LESSER GENERAL PUBLIC LICENSE") >= 0);
+
+        keyClick(Qt.Key_Escape);
+        tryCompare(licenseDialog, "visible", false);
+        verify(dialog.visible);
+        tryCompare(list, "activeFocus", true);
+        compare(list.currentIndex, bridgeIndex);
+        keyClick(Qt.Key_Return);
+        tryCompare(licenseDialog, "visible", true);
+        compare(licenseDialog.component.id, "qtbridge");
+        mouseClick(control("dependencyLicenseCloseButton"));
+        tryCompare(licenseDialog, "visible", false);
+
+        var terminal = dialog.components.find(function(component) { return component.id === "swift-terminal"; });
+        verify(terminal !== undefined, "The catalog must include the vendored terminal component.");
+        control("dependencyFilter").text = terminal.name;
+        tryCompare(list, "count", 1);
+        tryVerify(function() { return findVisualChild(list, "dependencyLicense-swift-terminal") !== null; });
+        mouseClick(control("dependencyLicense-swift-terminal"));
+        tryCompare(licenseDialog, "visible", true);
+        compare(licenseDialog.component.id, "swift-terminal");
+        compare(licenseDialog.component.license, "Unavailable; verification required");
+        verify(licenseText.text.indexOf("Verification required: no LICENSE") >= 0);
+        verify(licenseText.text.indexOf("Permission is hereby granted") < 0,
+               "A missing upstream license must not display the project's MIT grant.");
+        keyClick(Qt.Key_Escape);
+        tryCompare(licenseDialog, "visible", false);
+        keyClick(Qt.Key_Escape);
+        tryCompare(dialog, "visible", false);
+        compare(mockBackend.calls.length, 0);
+        compare(mockBackend.errorMessage, "D-Bus request failed.");
+    }
+    function test_dependencyDialogsFitCompactViewport_data() {
+        return [{tag: "light", darkMode: false}, {tag: "dark", darkMode: true}];
+    }
+    function test_dependencyDialogsFitCompactViewport(data) {
+        desktop.showNormal();
+        tryCompare(desktop, "visibility", Window.Windowed);
+        verify(waitForRendering(desktop.contentItem));
+        desktop.width = 640;
+        desktop.height = 360;
+        desktop.darkMode = data.darkMode;
+        tryCompare(desktop, "width", 640);
+        tryCompare(desktop, "height", 360);
+        var dialog = openDependenciesDialog();
+        verifyDialogFitsWindow(dialog);
+        var list = control("dependenciesList");
+        verify(list.width > 0 && list.height > 0);
+        var filter = control("dependencyFilter");
+        filter.text = "__no_matching_dependency__";
+        tryCompare(list, "count", 0);
+        var bridge = dialog.components.find(function(component) { return component.id === "qtbridge"; });
+        verify(bridge !== undefined);
+        filter.text = bridge.name;
+        tryCompare(list, "count", 1);
+        filter.forceActiveFocus();
+        keyClick(Qt.Key_Down);
+        tryCompare(list, "activeFocus", true);
+        keyClick(Qt.Key_Return);
+        var licenseDialog = control("dependencyLicenseDialog");
+        tryCompare(licenseDialog, "visible", true);
+        verifyDialogFitsWindow(licenseDialog);
+        var licenseText = control("dependencyLicenseText");
+        tryCompare(licenseText, "activeFocus", true);
+        var scroll = control("dependencyLicenseScroll");
+        verify(licenseText.contentWidth <= scroll.availableWidth + 1);
+        keyClick(Qt.Key_End, Qt.ControlModifier);
+        tryVerify(function() { return scroll.contentItem.contentY > 0; }, 5000,
+                  "The embedded license must remain scrollable in a compact window.");
+        var close = control("dependencyLicenseCloseButton");
+        var closePosition = close.mapToItem(desktop.contentItem, 0, 0);
+        verify(closePosition.x >= 0 && closePosition.x + close.width <= desktop.width);
+        verify(closePosition.y >= 0 && closePosition.y + close.height <= desktop.height);
+        mouseClick(close);
+        tryCompare(licenseDialog, "visible", false);
+        mouseClick(control("dependenciesCloseButton"));
+        tryCompare(dialog, "visible", false);
         compare(mockBackend.calls.length, 0);
     }
     function test_profileSelectionRequiresApply() {
