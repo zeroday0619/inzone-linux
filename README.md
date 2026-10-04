@@ -28,7 +28,8 @@ Sony account and cloud functions are outside the project scope. Firmware support
 - **Dynamic Profiles and Automatic App Switching**
   - Create, clone, rename, delete, import, and export custom profiles while retaining stable UUID identifiers and their routing templates.
   - Automatically switches to surround/FPS profiles when games launch (supporting native Linux, Steam, Proton, and Wine binaries) and switches to voice mode when Discord launches, restoring the previous profile when exited.
-- **Intuitive TUI & Powerful CLI**
+- **Swift Desktop, TUI & CLI**
+  - Qt Quick desktop interface with Fluent 2 styling and a Swift backend connected over the session D-Bus. Profiles, equalizer, microphone, headset settings, and application rules share the existing validated control layer.
   - Interactive terminal interface (`inzone-profile`) driven by SwiftTUI with mouse and keyboard controls, plus a comprehensive CLI for scripting, hotkeys, and window manager integration.
 - **Windows Profile & Personalized HRTF Interoperability**
   - Import and export individual entries or complete Windows-compatible `SoundProfile.json` collections. The Linux collection path preserves known fields, ordering, identifiers, routing templates, and retained extension fields subject to validation limits.
@@ -94,6 +95,38 @@ inzone-profile surround
 ```
 
 The Sony spatial audio stack is now active.
+
+---
+
+## Qt Desktop Interface
+
+The desktop uses Swift application logic, Qt Quick 6.10 or later, and the pinned
+[Qt Bridge for Swift](https://github.com/qt/qtbridge-swift) `0.2.0-beta` revision.
+The interface follows [Fluent 2](https://fluent2.microsoft.design/) color, spacing,
+typography, and focus conventions. The existing CLI and TUI remain available.
+
+After installing the audio stack above, build and install the desktop as the
+regular desktop user:
+
+```sh
+make gui-install SWIFT=/path/to/swift/toolchain/usr/bin/swift
+inzone-gui
+```
+
+Use the Swift 6.3.3 toolchain for the tested build. Additional build requirements
+are CMake 3.29+, Ninja, Qt 6.10+ development files (including Qt Core private
+headers, Qt Quick Controls, and Qt Wayland Client/platform plugins), and `libsystemd-dev`. The GUI uses the selected
+Swift toolchain's shared runtime, which must remain installed. The service uses
+statically linked Swift runtime libraries.
+
+`inzone-profile --gui` also launches the desktop after rebuilding and installing
+the updated CLI. The session D-Bus starts `inzone-service` on demand; no system
+bus service or administrator privileges are required for GUI operation.
+
+See [docs/gui.md](docs/gui.md) for architecture, interaction behavior, installation
+paths, and validation commands, and [docs/dbus.md](docs/dbus.md) for the service
+interface. Native Wayland support targets KDE Plasma, GNOME, Hyprland, and Sway;
+see [docs/wayland.md](docs/wayland.md) for diagnostics and validation coverage.
 
 ---
 

@@ -7,6 +7,7 @@ let package = Package(
     products: [
         .executable(name: "inzone-profile", targets: ["InzoneCLI"]),
         .executable(name: "inzone-tools", targets: ["InzoneTools"]),
+        .executable(name: "inzone-service", targets: ["InzoneService"]),
         .library(name: "InzoneCore", targets: ["InzoneCore"]),
     ],
     dependencies: [
@@ -15,6 +16,10 @@ let package = Package(
     ],
     targets: [
         .target(name: "InzoneCore"),
+        .target(name: "CInzoneDBus", linkerSettings: [.linkedLibrary("systemd")]),
+        .target(name: "InzoneServiceCore", dependencies: ["InzoneCore"]),
+        .executableTarget(name: "InzoneService", dependencies: ["InzoneServiceCore", "CInzoneDBus"]),
+        .testTarget(name: "InzoneServiceTests", dependencies: ["InzoneServiceCore", "InzoneCore", "CInzoneDBus"], resources: [.copy("Fixtures")]),
         .target(name: "InzoneToolsCore", dependencies: ["InzoneCore"]),
         .target(name: "InzoneDiagnostics", dependencies: ["InzoneCore", "CLADSPA"]),
         .executableTarget(name: "InzoneTools", dependencies: ["InzoneCore", "InzoneToolsCore", "InzoneDiagnostics"]),

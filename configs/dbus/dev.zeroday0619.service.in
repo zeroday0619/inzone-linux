@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=dev.zeroday0619
+Exec=@INZONE_SERVICE_EXECUTABLE@
+SystemdService=inzone-control.service

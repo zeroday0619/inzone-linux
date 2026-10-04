@@ -11,7 +11,8 @@ struct InzoneCommand {
 
     No arguments: open the SwiftTUI terminal interface.
     Profiles: fps | music | voice | balanced | surround | restore
-    --tui, --gui                         Open the terminal interface
+    --tui                               Open the terminal interface
+    --gui                               Open the Qt desktop interface
     --debug                             Enable command and DSP verification logging
     --status                            Print the active profile
     --list, --help, -h                   Print this help
@@ -100,7 +101,10 @@ struct InzoneCommand {
         case "--help", "-h", "--list":
             try count(arguments, [1], usage: command)
             print(help)
-        case "--tui", "--gui":
+        case "--gui":
+            try count(arguments, [1], usage: command)
+            try launchDesktop(paths: paths)
+        case "--tui":
             try count(arguments, [0, 1], usage: "--tui")
             guard isatty(STDIN_FILENO) == 1 && isatty(STDOUT_FILENO) == 1 else {
                 throw InzoneError.message("The TUI requires an interactive terminal. Use --help for CLI commands.")
@@ -272,6 +276,24 @@ struct InzoneCommand {
             try count(arguments, [1], usage: command)
             try controller.activate(command)
             print("Applied profile: \(command).")
+        }
+    }
+
+    private static func launchDesktop(paths: InzonePaths) throws {
+        let executable = URL(fileURLWithPath: "/proc/self/exe").resolvingSymlinksInPath()
+        let candidates = [
+            executable.deletingLastPathComponent().appendingPathComponent("inzone-gui"),
+            paths.home.appendingPathComponent(".local/bin/inzone-gui"),
+        ]
+        guard let desktop = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0.path) }) else {
+            throw InzoneError.message("The desktop interface is not installed. Run: make gui-install")
+        }
+        let process = Process()
+        process.executableURL = desktop
+        try process.run()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            throw InzoneError.message("The desktop interface exited with status \(process.terminationStatus).")
         }
     }
 

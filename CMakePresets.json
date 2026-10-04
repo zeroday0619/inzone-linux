@@ -1,0 +1,21 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "gui",
+      "displayName": "Qt 6 Swift GUI",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/gui",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_INSTALL_PREFIX": "$env{HOME}/.local"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "gui", "configurePreset": "gui" }
+  ],
+  "testPresets": [
+    { "name": "gui", "configurePreset": "gui", "output": { "outputOnFailure": true } }
+  ]
+}

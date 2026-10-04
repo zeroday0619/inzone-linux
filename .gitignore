@@ -72,3 +72,10 @@
 .env
 .env.*
 !.env.example
+
+# CMake GUI build directories and local presets.
+/build/
+/CMakeUserPresets.json
+
+# Python integration-test bytecode.
+__pycache__/

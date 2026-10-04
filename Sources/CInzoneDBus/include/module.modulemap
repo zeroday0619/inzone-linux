@@ -1,0 +1,4 @@
+module CInzoneDBus {
+    header "InzoneDBus.h"
+    export *
+}

@@ -8,11 +8,15 @@ SWIFT_BINARY ?= $(CURDIR)/.build/$(SWIFT_CONFIGURATION)/inzone-profile
 SWIFT_TOOLS_BINARY ?= $(CURDIR)/.build/$(SWIFT_CONFIGURATION)/inzone-tools
 INSTALL_HOME ?= $(HOME)
 FETCH_FLAGS ?=
+CMAKE ?= cmake
+GUI_BUILD_DIRECTORY ?= $(CURDIR)/build/gui
+GUI_CMAKE_FLAGS ?=
 
 # Swift must use its own Clang and linker instead of inherited C build overrides.
 SWIFT_ENV = env -u CC -u CXX -u LD -u AR -u CFLAGS -u CXXFLAGS -u LDFLAGS
+GUI_ENV = $(SWIFT_ENV) PATH="$(if $(findstring /,$(SWIFTC)),$(dir $(SWIFTC)):)$(PATH)"
 
-.PHONY: all sync fetch assets native-build swift-build swift-test build install check test help check-user
+.PHONY: all sync fetch assets native-build swift-build swift-test build install check test help check-user gui-configure gui-build gui-test gui-wayland-test gui-install
 
 all: install
 
@@ -53,6 +57,25 @@ check: build
 
 test: check
 
+gui-configure: check-user
+	$(GUI_ENV) "$(CMAKE)" -S "$(CURDIR)" -B "$(GUI_BUILD_DIRECTORY)" -G Ninja \
+		-DCMAKE_BUILD_TYPE=Release -DCMAKE_Swift_COMPILER="$(SWIFTC)" \
+		-DCMAKE_INSTALL_PREFIX="$(INSTALL_HOME)/.local" $(GUI_CMAKE_FLAGS)
+
+gui-build: gui-configure
+	$(GUI_ENV) "$(CMAKE)" --build "$(GUI_BUILD_DIRECTORY)"
+
+gui-test: gui-build
+	ctest --test-dir "$(GUI_BUILD_DIRECTORY)" --output-on-failure
+
+gui-wayland-test:
+	$(MAKE) gui-build GUI_CMAKE_FLAGS="$(GUI_CMAKE_FLAGS) -DINZONE_WAYLAND_TESTS=ON"
+	ctest --test-dir "$(GUI_BUILD_DIRECTORY)" --output-on-failure -L wayland
+
+gui-install: gui-build
+	"$(CMAKE)" --install "$(GUI_BUILD_DIRECTORY)"
+	systemctl --user daemon-reload
+
 help:
 	@printf '%s\n' \
 		'make / make install  Download assets, build Swift, and install the CLI, DSP, and configs.' \
@@ -64,6 +87,10 @@ help:
 		'make swift-test      Run Swift unit tests without preparing vendor assets.' \
 		'make build           Prepare assets and build the Swift executables and DSP plugin.' \
 		'make check / test    Prepare assets, build, and run Swift tests without installing.' \
+		'make gui-build       Build the Qt Quick desktop and Swift D-Bus service.' \
+		'make gui-test        Build and smoke-test the desktop interface.' \
+		'make gui-wayland-test Run native Wayland tests with an isolated KWin compositor.' \
+		'make gui-install     Install the desktop and D-Bus service under INSTALL_HOME/.local.' \
 		'' \
 		'Variables: INSTALL_HOME=$$HOME, FETCH_FLAGS=' \
 		'Swift: SWIFT=swift, SWIFT_FLAGS=, SWIFT_CONFIGURATION=release, SWIFT_BINARY=.build/release/inzone-profile' \

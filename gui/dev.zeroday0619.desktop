@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=INZONE Control
+Comment=Manage INZONE headset audio profiles and device settings
+Exec=inzone-gui
+Icon=dev.zeroday0619
+Terminal=false
+Categories=AudioVideo;Audio;
+Keywords=Sony;INZONE;Headset;Audio;Microphone;
+StartupNotify=true
+StartupWMClass=dev.zeroday0619

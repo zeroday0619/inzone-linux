@@ -1,0 +1,4 @@
+module CInzoneGuiRuntime {
+    header "InzoneGuiRuntime.h"
+    export *
+}
